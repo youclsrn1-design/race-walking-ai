@@ -4,155 +4,99 @@ import cv2
 import numpy as np
 import tempfile
 import os
-from PIL import Image
 
-# -------------------------------------------------------------------
-# ⚙️ 1. 앱 기본 설정 및 UI (국가대표/엘리트 타겟 프로페셔널 디자인)
-# -------------------------------------------------------------------
-st.set_page_config(page_title="Pro Racewalking AI", page_icon="⏱️", layout="wide")
+# 페이지 설정 (전문가용 랩 느낌)
+st.set_page_config(page_title="Elite Racewalking Analysis", page_icon="🏅")
+st.title("🏅 Elite Racewalking Analysis Report")
+st.markdown("---")
 
-st.title("⏱️ 엘리트 경보 역학 분석 시스템 (Pro Racewalking AI)")
-st.caption("World Athletics Rule 54 (구 230.2조) 기반 초정밀 생체역학 판독기")
-st.write("국가대표 및 세계 최상위 경보 선수들의 **'하이브리드 바운싱 보행(Hybrid bouncing gait)'** 최적화 및 파울(Foul) 리스크 검증을 위한 3D 운동역학 추적 시스템입니다.")
-st.warning("🔒 훈련 기밀 유지를 위해 업로드된 영상은 서버에 저장되지 않으며 메모리에서 즉시 파기됩니다.")
+# MediaPipe 내부 설정 (고객에게 노출 안 함)
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=False, model_complexity=2, min_detection_confidence=0.7)
+mp_drawing = mp.solutions.drawing_utils
 
-st.write("---")
-
-# -------------------------------------------------------------------
-# 📐 2. 역학 계산 수학 함수
-# -------------------------------------------------------------------
 def calculate_angle(a, b, c):
-    """세 점(a, b, c)을 이용한 2D 관절 각도 계산"""
     a, b, c = np.array(a), np.array(b), np.array(c)
-    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-    angle = np.abs(radians*180.0/np.pi)
-    if angle > 180.0:
-        angle = 360 - angle
-    return angle
+    rad = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+    deg = np.abs(rad * 180.0 / np.pi)
+    return 360-deg if deg > 180 else deg
 
-def calculate_thigh_angle(hip_l, knee_l, hip_r, knee_r):
-    """전방 스윙 시 형성되는 두 대퇴부(허벅지) 사이의 궤적 각도 계산"""
-    vec_l = np.array(knee_l) - np.array(hip_l)
-    vec_r = np.array(knee_r) - np.array(hip_r)
-    cosine_angle = np.dot(vec_l, vec_r) / (np.linalg.norm(vec_l) * np.linalg.norm(vec_r))
-    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
-    return np.degrees(angle)
+# 1. 영상 업로드 (유일한 입력 단계)
+video_file = st.file_uploader("분석할 훈련 영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
 
-# -------------------------------------------------------------------
-# 📥 3. 영상 업로드 및 분석 파라미터 설정
-# -------------------------------------------------------------------
-st.subheader("1️⃣ 분석 데이터 입력")
-col1, col2 = st.columns(2)
-with col1:
-    fps_input = st.number_input("카메라 촬영 FPS (초당 프레임)", min_value=30, max_value=240, value=60, step=30, 
-                                help="Loss of Contact 판독을 위해 가급적 60fps 이상의 고속 촬영 영상을 권장합니다.")
-with col2:
-    uploaded_video = st.file_uploader("측면(Sagittal plane) 촬영 영상 업로드 (MP4/MOV)", type=['mp4', 'mov'])
-
-st.write("---")
-
-# -------------------------------------------------------------------
-# 🚀 4. 실시간 AI 포즈 에스티메이션 및 역학 분석
-# -------------------------------------------------------------------
-if uploaded_video is not None and st.button("실시간 역학 데이터 추출 및 판독"):
-    # 임시 파일 저장
-    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    tfile.write(uploaded_video.read())
-    tfile_path = tfile.name
-    tfile.close()
+if video_file:
+    tfile = tempfile.NamedTemporaryFile(delete=False)
+    tfile.write(video_file.read())
+    cap = cv2.VideoCapture(tfile.name)
     
-    cap = cv2.VideoCapture(tfile_path)
-    mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2) # 엘리트용 고정밀 모델(complexity=2) 적용
-    mp_drawing = mp.solutions.drawing_utils
+    # 핵심 프레임 추출을 위한 변수
+    key_frame_data = None
+    max_knee_extension = 0
 
-    # 측정 변수 초기화
-    max_knee_angle = 0
-    max_thigh_angle = 0
-    bent_knee_frame = None
-    thigh_angle_frame = None
-    
-    with st.spinner("다채널 운동역학 알고리즘 구동 중... (질량중심(CoM) 궤적 및 관절 모멘트 분석)"):
+    with st.spinner("AI가 생체역학적 핵심 지표를 산출하고 있습니다..."):
         while cap.isOpened():
             ret, frame = cap.read()
-            if not ret:
-                break
-
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(image_rgb)
+            if not ret: break
             
-            if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                
-                # [좌측/우측 관절 좌표 추출]
-                l_hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x, landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
-                l_knee = [landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x, landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y]
-                l_ankle = [landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x, landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].y]
-                
-                r_hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y]
-                r_knee = [landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].y]
-                
-                # 1. 무릎 신전 각도 계산 (Bent Knee 파울 판독용)
-                knee_angle_l = calculate_angle(l_hip, l_knee, l_ankle)
-                if knee_angle_l > max_knee_angle:
-                    max_knee_angle = knee_angle_l
-                    mp_drawing.draw_landmarks(image_rgb, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                    bent_knee_frame = Image.fromarray(image_rgb)
-                
-                # 2. 대퇴부 각도 계산 (효율성 및 오버스트라이딩 판독용)
-                thigh_angle = calculate_thigh_angle(l_hip, l_knee, r_hip, r_knee)
-                if thigh_angle > max_thigh_angle:
-                    max_thigh_angle = thigh_angle
-                    thigh_angle_frame = Image.fromarray(image_rgb)
-
-        cap.release()
-        pose.close()
-
-    # 메모리 정리
-    try:
-        os.unlink(tfile_path)
-    except:
-        pass
-
-    # -------------------------------------------------------------------
-    # 📊 5. 엘리트 전문 판독 보고서 출력
-    # -------------------------------------------------------------------
-    if bent_knee_frame is not None:
-        st.subheader("📋 역학 분석 판독 보고서 (Biomechanical Report)")
-        
-        # --- 섹션 A: 규정 위반 검증 ---
-        st.markdown("### 🛑 규정 위반 검증 (Rule 54 Foul Detection)")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.image(bent_knee_frame, caption=f"최대 신전 무릎 각도: {max_knee_angle:.1f}°", use_column_width=True)
-        with c2:
-            st.markdown("#### 1. 무릎 신전 (Bent Knee) 규정")
-            if max_knee_angle >= 175:
-                st.success(f"**[PASS] 완벽한 강체 기둥 (Rigid Lever)**\n\n측정 각도 **{max_knee_angle:.1f}°**. 무릎 관절의 에너지 흡수 기전이 완벽히 차단되었습니다. 착지 순간부터 수직선을 통과할 때까지 완벽한 과신전(Hyperextension) 상태를 유지 중입니다.")
-            else:
-                st.error(f"**[FOUL RISK] 벤트 니(Bent Knee) 위험 수준**\n\n측정 각도 **{max_knee_angle:.1f}°**. 엘리트 기준 175° 미만으로 굴곡(Flexion)이 감지되었습니다. 즉각적인 실격 사유가 될 수 있습니다. 발뒤꿈치 착지 시 신경근 제어(Neuromuscular control)를 통해 무릎을 일직선으로 잠가야 합니다.")
+            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = pose.process(img)
             
-            st.markdown("#### 2. 지속 접촉 (Loss of Contact) 규정")
-            # 60fps 기준 1프레임은 약 0.016초. 0.042초 한계치 설명
-            st.info(f"**[SYSTEM INFO] 프레임 분석 한계치 평가**\n\n입력된 {fps_input}FPS 영상 기준, 1프레임은 약 {(1/fps_input):.3f}초입니다. 인간 심판의 시각적 프레임 한계인 0.042초 미만으로 비행 시간(Flight time)을 제어해야 합니다. (남성 20km 세계 정상급: 0.03초 내외)")
-
-        st.write("---")
-        
-        # --- 섹션 B: 운동역학적 퍼포먼스 ---
-        st.markdown("### ⚡ 운동역학 효율 및 추진력 (Kinematic Efficiency)")
-        c3, c4 = st.columns(2)
-        with c3:
-            st.image(thigh_angle_frame, caption=f"최대 대퇴부 이격 각도: {max_thigh_angle:.1f}°", use_column_width=True)
-        with c4:
-            st.markdown("#### 3. 대퇴부 궤적 및 보폭 효율 (Thigh Angle)")
-            if 50 <= max_thigh_angle <= 65:
-                st.success(f"**[OPTIMAL] 최적의 시상면 궤적**\n\n측정 각도 **{max_thigh_angle:.1f}°**. 50°~65° 사이의 완벽한 궤적입니다. 보폭(약 1.12m 한계치) 확장의 제동력(Braking force) 리스크 없이 걷기의 형태학적 껍질 속에서 달리기의 동력을 효율적으로 생산하고 있습니다.")
-            elif max_thigh_angle < 50:
-                st.warning(f"**[LOSS] 추진력 손실 (Short Stride)**\n\n측정 각도 **{max_thigh_angle:.1f}°**. 대퇴부 각도가 50° 미만입니다. 고관절 굴곡 및 신전 모멘트가 부족하여 전진 속도 확보에 치명적인 손실이 발생하고 있습니다.")
-            else:
-                st.error(f"**[DANGER] 오버스트라이딩 및 골반축 붕괴**\n\n측정 각도 **{max_thigh_angle:.1f}°**. 65°를 초과하여 골반의 전후방 기울임(Pelvic drop/tilt) 한계치를 넘었습니다. 착지 제동력이 급증하고 심판진에게 달리기(Running) 착시를 유발할 수 있습니다. 보폭을 줄이고 보빈도(Step frequency)를 분당 230 이상으로 끌어올리십시오.")
+            if res.pose_landmarks:
+                lm = res.pose_landmarks.landmark
                 
-            st.markdown("#### 4. 동력 전이 (Power Transfer)")
-            st.write("무릎의 추진력이 차단된 상태이므로, 입각기 말기 전방 추진의 절대적인 동력은 **발목 저측굴곡근(Plantarflexors)**에서 파생되어야 합니다. 착지 시 23°~27°의 예리한 발목 배측굴곡(Dorsiflexion) 텐션을 유지하십시오.")
+                # 필요 관절 좌표 추출
+                l_hip = [lm[mp_pose.PoseLandmark.LEFT_HIP].x, lm[mp_pose.PoseLandmark.LEFT_HIP].y]
+                l_knee = [lm[mp_pose.PoseLandmark.LEFT_KNEE].x, lm[mp_pose.PoseLandmark.LEFT_KNEE].y]
+                l_ankle = [lm[mp_pose.PoseLandmark.LEFT_ANKLE].x, lm[mp_pose.PoseLandmark.LEFT_ANKLE].y]
+                l_foot = [lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].x, lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].y]
 
+                # 핵심 각도 계산
+                knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
+                ankle_angle = calculate_angle(l_knee, l_ankle, l_foot)
 
+                # '무릎이 가장 펴진 순간(착지 순간)'을 핵심 프레임으로 포착
+                if knee_angle > max_knee_extension:
+                    max_knee_extension = knee_angle
+                    # 분석용 시각화 처리
+                    annotated_img = img.copy()
+                    mp_drawing.draw_landmarks(annotated_img, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                    key_frame_data = {
+                        "image": annotated_img,
+                        "knee": knee_angle,
+                        "ankle": ankle_angle
+                    }
+
+    cap.release()
+    os.unlink(tfile.name)
+
+    # 2. 결과 리포트 (핵심 정보만 노출)
+    if key_frame_data:
+        st.subheader("📍 핵심 생체역학 분석 결과")
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.image(key_frame_data["image"], caption="포착된 핵심 착지 모멘트", use_container_width=True)
+        
+        with col2:
+            # 주요 지표를 직관적으로 표시
+            st.metric("무릎 신전도 (Knee Extension)", f"{key_frame_data['knee']:.1f}°")
+            st.metric("발목 착지각 (Ankle Angle)", f"{key_frame_data['ankle']:.1f}°")
+            
+            # 규칙 준수 여부 판정
+            if key_frame_data["knee"] >= 175:
+                st.success("✅ Rule 54 준수 (무릎 완전 신전)")
+            else:
+                st.error("⚠️ 무릎 신전 부족 (경고 위험)")
+
+        # 3. 전문가 처방 (Prescription)
+        st.markdown("---")
+        st.subheader("📋 전문 생체역학 처방")
+        
+        # 발목 각도에 따른 맞춤형 처방 로직
+        a_angle = key_frame_data["ankle"]
+        if a_angle < 23:
+            st.warning("**[처방]** 발목 각도가 너무 낮습니다. 지면 제동력이 발생하여 전진 속도가 감소합니다. 발가락을 조금 더 정강이 쪽으로 당겨(Dorsiflexion) 착지하세요.")
+        elif 23 <= a_angle <= 27:
+            st.info("**[처방]** 이상적인 발목 각도입니다. 현재의 착지 메커니즘을 유지하면서 보폭(Stride length)을 확장하는 데 집중하세요.")
+        else:
+            st.warning("**[처방]** 발목 각도가 너무 높습니다. 족저굴곡이 과도하여 착지 시 불안정성이 생길 수 있습니다.")
