@@ -1,5 +1,13 @@
-streamlit
-mediapipe
-opencv-python-headless
-numpy
-Pillow
+# 핵심 프레임워크 (안정화 버전)
+streamlit==1.31.1
+
+# AI 및 컴퓨터 비전 (호환성 검증 버전)
+mediapipe==0.10.11
+opencv-python-headless==4.9.0.80
+
+# 데이터 처리 (중요: NumPy 2.0 충돌 방지를 위해 1.x 버전 유지)
+numpy==1.26.4
+pandas==2.2.1
+
+# 이미지 처리
+Pillow==10.2.0
