@@ -5,50 +5,50 @@ import numpy as np
 import tempfile
 import os
 
-# 1. 전문가용 인터페이스 설정
-st.set_page_config(page_title="4D Racewalking AI Lab", layout="wide")
-st.title("🌍 엘리트 경보 4D 생체역학 판독 시스템 (사선 구도 완벽 대응)")
-st.markdown("##### 💡 MediaPipe 3D World Landmarks 기반 시점 초월(View-Invariant) 벡터 연산 엔진")
-st.markdown("도로 경주 특성상 발생하는 **'대각선 촬영 왜곡'**을 완벽하게 해결했습니다. AI가 선수의 뼈대를 가상의 3D 공간으로 불러와 **시간(Time) 흐름에 따른 4D 벡터 연산**을 수행하여, 카메라 각도와 무관하게 100% 정확한 무릎 각도를 추출해 냅니다.")
-st.warning("🔒 [Privacy-First] 본 시스템은 분석 직후 메모리에서 영상을 즉각 영구 파쇄하여 기밀을 완벽히 보호합니다.")
+# 1. 인터페이스 설정
+st.set_page_config(page_title="Racewalking Foul Catcher", layout="wide")
+st.title("🚨 엘리트 경보 Rule 54 파울 정밀 판독기")
+st.markdown("##### 💡 쓸데없는 데이터는 버리고, '무릎 굽힘(Bent Knee)'과 '양발 체공(Loss of Contact)' 파울 순간만 낚아챕니다.")
 st.write("---")
 
-# 2. AI 분석 엔진 초기화
+# 2. AI 분석 엔진
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(static_image_mode=False, model_complexity=2, min_detection_confidence=0.5)
+pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
-def calculate_3d_angle(a, b, c):
-    ba = np.array([a.x - b.x, a.y - b.y, a.z - b.z])
-    bc = np.array([c.x - b.x, c.y - b.y, c.z - b.z])
-    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-    angle = np.degrees(np.arccos(np.clip(cosine_angle, -1.0, 1.0)))
-    return angle
+def calculate_angle(a, b, c):
+    a, b, c = np.array(a), np.array(b), np.array(c)
+    rad = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+    deg = np.abs(rad * 180.0 / np.pi)
+    return 360 - deg if deg > 180 else deg
 
-def calculate_3d_pelvic_drop(l_hip, r_hip):
-    v = np.array([l_hip.x - r_hip.x, l_hip.y - r_hip.y, l_hip.z - r_hip.z])
-    drop_angle = np.degrees(np.arcsin(np.abs(v[1]) / np.linalg.norm(v)))
-    return drop_angle
-
-# 3. 통합 영상 업로드 및 분석
-st.subheader("훈련 영상 데이터 업로드")
-st.error("⚠️ **10초 이내의 영상**을 올려주세요. 어떤 각도에서 찍은 영상이라도 AI가 3D 공간으로 변환하여 계산합니다.")
-video_file = st.file_uploader("경보 역학 분석 영상 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
+# 3. 영상 업로드
+st.error("⚠️ **10초 이내의 영상**을 올려주세요. 파울이 발생한 찰나의 프레임을 박제하여 보여줍니다.")
+video_file = st.file_uploader("경보 훈련 영상 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
 
 if video_file:
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(video_file.read())
     tfile.close() 
     
-    # 4D 데이터 수집용 리스트
-    all_frames_data = [] # 모든 프레임의 데이터를 수집하여 나중에 최솟값을 찾음
-    hip_y_trajectory = [] 
-    max_pelvic_drop = 0
+    # 파울 기록 저장소
+    bent_knee_fouls = []     # (각도, 이미지)
+    loss_of_contact_fouls = [] # (이미지)
+    
+    # 역학 추적 변수
+    prev_stride_dist = 0
+    prev_trend = 0
+    global_ground_y = 0.0 # 지면(가장 낮은 발의 Y좌표) 추적
+    
+    # 쿨다운 (같은 파울을 연속으로 여러 장 찍지 않도록 방어)
+    cooldown_bent_knee = 0
+    cooldown_contact = 0
+    
     person_detected = False
 
     try:
         cap = cv2.VideoCapture(tfile.name)
-        with st.spinner("AI가 영상을 3D 공간으로 변환하여 0.42초 교차점의 절대 최솟값을 찾는 중입니다..."):
+        with st.spinner("AI가 영상을 프레임 단위로 쪼개어 파울 순간을 수색 중입니다..."):
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
@@ -59,99 +59,113 @@ if video_file:
                 img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 res = pose.process(img)
                 
-                if res.pose_world_landmarks and res.pose_landmarks:
+                # 쿨다운 감소
+                if cooldown_bent_knee > 0: cooldown_bent_knee -= 1
+                if cooldown_contact > 0: cooldown_contact -= 1
+                
+                if res.pose_landmarks:
                     person_detected = True
-                    world_lm = res.pose_world_landmarks.landmark
+                    lm = res.pose_landmarks.landmark
                     
-                    l_h = world_lm[mp_pose.PoseLandmark.LEFT_HIP]
-                    r_h = world_lm[mp_pose.PoseLandmark.RIGHT_HIP]
-                    l_k = world_lm[mp_pose.PoseLandmark.LEFT_KNEE]
-                    r_k = world_lm[mp_pose.PoseLandmark.RIGHT_KNEE]
-                    l_a = world_lm[mp_pose.PoseLandmark.LEFT_ANKLE]
-                    r_a = world_lm[mp_pose.PoseLandmark.RIGHT_ANKLE]
-
-                    # 3D 무릎 각도 실시간 계산
-                    l_knee_angle = calculate_3d_angle(l_h, l_k, l_a)
-                    r_knee_angle = calculate_3d_angle(r_h, r_k, r_a)
+                    l_h = [lm[mp_pose.PoseLandmark.LEFT_HIP].x, lm[mp_pose.PoseLandmark.LEFT_HIP].y]
+                    r_h = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
+                    l_k = [lm[mp_pose.PoseLandmark.LEFT_KNEE].x, lm[mp_pose.PoseLandmark.LEFT_KNEE].y]
+                    r_k = [lm[mp_pose.PoseLandmark.RIGHT_KNEE].x, lm[mp_pose.PoseLandmark.RIGHT_KNEE].y]
+                    l_a = [lm[mp_pose.PoseLandmark.LEFT_ANKLE].x, lm[mp_pose.PoseLandmark.LEFT_ANKLE].y]
+                    r_a = [lm[mp_pose.PoseLandmark.RIGHT_ANKLE].x, lm[mp_pose.PoseLandmark.RIGHT_ANKLE].y]
+                    nose_x = lm[mp_pose.PoseLandmark.NOSE].x
                     
-                    # 3D 골반 기울기
-                    pelvic_drop = calculate_3d_pelvic_drop(l_h, r_h)
-                    if pelvic_drop > max_pelvic_drop:
-                        max_pelvic_drop = pelvic_drop
-
-                    # 골반 상하 이동 (체공 감지)
-                    hip_center_y = (l_h.y + r_h.y) / 2
-                    hip_y_trajectory.append(hip_center_y)
-
-                    # 💡 [핵심 해결책] 15cm 제한을 풀고, 모든 프레임의 발목 거리를 다 기록합니다!
-                    xz_distance = np.sqrt((l_a.x - r_a.x)**2 + (l_a.z - r_a.z)**2)
-                    stance_leg_angle = l_knee_angle if l_a.y > r_a.y else r_knee_angle
-
+                    # 💡 [핵심 1] 지면(Ground) 라인 실시간 추적
+                    # 발목 중 가장 아래(Y값이 가장 큰) 좌표를 지속적으로 갱신
+                    current_lowest_y = max(l_a[1], r_a[1])
+                    if current_lowest_y > global_ground_y:
+                        global_ground_y = current_lowest_y
+                        
+                    # 보폭(발목 사이의 X거리) 계산
+                    stride_dist = abs(l_a[0] - r_a[0])
+                    trend = stride_dist - prev_stride_dist
+                    
+                    # 진행 방향 판별
+                    hip_center_x = (l_h[0] + r_h[0]) / 2
+                    facing_right = nose_x > hip_center_x 
+                    
+                    # 화면 표시용 복사본
                     annotated = img.copy()
                     mp_drawing.draw_landmarks(annotated, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                    
-                    all_frames_data.append({
-                        "dist": xz_distance, 
-                        "knee_angle": stance_leg_angle, 
-                        "img": annotated.copy()
-                    })
+
+                    # =========================================================
+                    # 🚨 파울 추적 1: 앞다리 170도 이하 (Bent Knee)
+                    # 원리: 보폭이 가장 넓어졌다가 좁아지기 시작하는 "착지(Peak)" 순간
+                    # =========================================================
+                    if trend < 0 and prev_trend > 0 and stride_dist > 0.05 and cooldown_bent_knee == 0:
+                        # 앞다리가 무엇인지 확인
+                        if facing_right:
+                            leading_is_left = l_a[0] > r_a[0]
+                        else:
+                            leading_is_left = l_a[0] < r_a[0]
+                            
+                        # 앞다리 무릎 각도 계산
+                        front_angle = calculate_angle(l_h, l_k, l_a) if leading_is_left else calculate_angle(r_h, r_k, r_a)
+                        
+                        # 170도 이하면 파울 처리 및 증거 수집!
+                        if front_angle <= 170.0:
+                            # 증거 사진에 빨간 글씨로 각도 새기기
+                            cv2.putText(annotated, f"BENT KNEE FOUL: {front_angle:.1f} deg", (20, 50), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
+                            bent_knee_fouls.append((front_angle, annotated.copy()))
+                            cooldown_bent_knee = 15 # 다음 15프레임 동안은 중복 캡처 방지
+
+                    # =========================================================
+                    # 🚨 파울 추적 2: 양발 체공 (Loss of Contact)
+                    # 원리: 두 다리가 교차하는(Valley) 0.42초의 순간, 두 발이 모두 지면 라인보다 한참 위에 있을 때
+                    # =========================================================
+                    if trend > 0 and prev_trend < 0 and stride_dist < 0.08 and cooldown_contact == 0:
+                        # 현재 프레임에서 가장 낮은 발조차도 '지면 라인'보다 2% 이상 높이 떠 있다면 체공 파울!
+                        if (global_ground_y - current_lowest_y) > 0.02: 
+                            cv2.putText(annotated, "LOSS OF CONTACT FOUL", (20, 100), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+                            loss_of_contact_fouls.append(annotated.copy())
+                            cooldown_contact = 15
+
+                    prev_stride_dist = stride_dist
+                    prev_trend = trend
 
         cap.release()
     finally:
         if os.path.exists(tfile.name):
             os.unlink(tfile.name)
 
+    # 4. 파울 판독 결과 리포트
     if not person_detected:
-        st.error("❌ 알고리즘이 피사체의 3D 랜드마크를 추출하지 못했습니다.")
-    elif not all_frames_data:
-        st.warning("⚠️ 영상에서 분석할 데이터를 찾지 못했습니다.")
+        st.error("❌ 선수를 인식하지 못했습니다.")
     else:
         st.divider()
-        st.subheader("🎯 4D AI 입체 생체역학 판독 결과")
+        st.header("🎯 Rule 54 판독 결과 리포트")
         
-        # 💡 [절대 최솟값 추출] 영상 전체에서 양발이 '가장 가까워진 단 하나의 순간'을 무조건 데스 존으로 확정
-        exact_crossover = min(all_frames_data, key=lambda x: x['dist'])
-        min_crossover_knee = exact_crossover["knee_angle"]
+        # --- 1. 무릎 굽힘(Bent Knee) 결과 ---
+        st.subheader(f"🔴 Bent Knee (170도 이하) 파울: 총 {len(bent_knee_fouls)}회 적발")
+        if len(bent_knee_fouls) > 0:
+            st.error("⚠️ 착지 순간 앞다리 무릎이 170도 이하로 붕괴되는 치명적인 파울이 포착되었습니다.")
+            # 가로로 증거 사진 나열
+            cols = st.columns(len(bent_knee_fouls))
+            for idx, foul in enumerate(bent_knee_fouls):
+                with cols[idx]:
+                    st.image(foul[1], channels="RGB", caption=f"파울 {idx+1}: 무릎 {foul[0]:.1f}°")
+        else:
+            st.success("✅ Bent Knee 파울 없음: 착지 시 170도 이상의 무릎 신전을 훌륭하게 유지했습니다.")
+            
+        st.write("---")
         
-        # 체공(Loss of Contact) 감지 로직
-        bounce_warning = False
-        if hip_y_trajectory:
-            bounce_variance = max(hip_y_trajectory) - min(hip_y_trajectory)
-            if bounce_variance > 0.08: 
-                bounce_warning = True
-
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.image(exact_crossover["img"], channels="RGB", use_column_width=True, caption="[4D 스캔 완료] 양발 교차(Mid-Stance) 데스 존 포착")
-            
-        with col2:
-            st.markdown("#### 🚨 1. Rule 54: 0.42초 데스 존 무릎 판독")
-            st.metric("교차 순간 지지 다리 3D 무릎 각도", f"{min_crossover_knee:.1f}°")
-            
-            if min_crossover_knee >= 175: 
-                st.success("🔥 **[무릎 강체 통과]** 사선 구도에서도 무릎이 완벽하게 180도에 가깝게 유지되는 것이 수학적으로 증명되었습니다.")
-            elif 170 <= min_crossover_knee < 175:
-                st.warning("⚠️ **[충격 흡수 경고]** 교차 구간에서 무릎이 미세하게 무너집니다. 심판의 파울 판정 위험이 있습니다.")
-            else:
-                st.error(f"❌ **[Bent Knee 실격]** 카메라 왜곡을 제거한 3D 판독 결과, 무릎 각도가 {min_crossover_knee:.1f}도로 심각하게 붕괴되었습니다.")
-
-            st.write("---")
-            
-            st.markdown("#### ⚖️ 2. 골반 동역학 및 체공 판독")
-            st.metric("3D 최대 골반 기울기 (Pelvic Drop)", f"{max_pelvic_drop:.1f}°")
-            
-            if bounce_warning:
-                st.error("❌ **[Loss of Contact 비행]** 3D 골반 중심점의 상하 진폭이 기준치(8cm)를 초과했습니다. 양발이 허공에 뜨는 러닝 점프 현상이 확인되었습니다.")
-            else:
-                st.success("✅ **[지면 접촉 유지]** 체공 현상 없이 안정적으로 바닥을 밀고 나갑니다.")
-                
-            if max_pelvic_drop < 5:
-                st.warning("⚠️ **[리듬 결여]** 골반의 움직임이 뻣뻣합니다.")
-            elif 5 <= max_pelvic_drop <= 12:
-                st.success("🔥 **[역학적 최적]** 완벽한 3D 시계추 리듬이 유지되고 있습니다.")
-            else:
-                st.error("⚠️ **[에너지 누수]** 코어 지지력이 무너져 골반이 12도 이상 과도하게 떨어집니다.")
+        # --- 2. 체공(Loss of Contact) 결과 ---
+        st.subheader(f"🟡 Loss of Contact (양발 체공) 파울: 총 {len(loss_of_contact_fouls)}회 적발")
+        if len(loss_of_contact_fouls) > 0:
+            st.warning("⚠️ 다리가 교차하는 찰나의 순간에 양발이 모두 지면에서 떨어지는 비행(Floating) 현상이 포착되었습니다.")
+            cols2 = st.columns(len(loss_of_contact_fouls))
+            for idx, img in enumerate(loss_of_contact_fouls):
+                with cols2[idx]:
+                    st.image(img, channels="RGB", caption=f"체공 파울 {idx+1} (교차 프레임)")
+        else:
+            st.success("✅ Loss of Contact 파울 없음: 교차 구간에서도 한 발이 완벽하게 지면을 지지하고 있습니다.")
 
 st.write("---")
-st.info("💡 **생체역학 엔진 R&D 피드백**\n\n지속적인 알고리즘 고도화를 위해 현장의 소중한 피드백을 수렴하고 있습니다.\n\n📧 **Chief Developer:** [youclsrn1@gmail.com](mailto:youclsrn1@gmail.com)")
+st.info("💡 **이 판독기는 국제 육상 연맹(World Athletics) Rule 54의 핵심인 '앞다리 신전'과 '교차 순간 체공'만을 수학적으로 필터링하여 증거 프레임을 추출합니다.**")
