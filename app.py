@@ -5,9 +5,9 @@ import numpy as np
 import tempfile
 import os
 
-st.set_page_config(page_title="Rule 54 Support Phase VAR", layout="wide")
-st.title("🚨 Rule 54 공식 VAR (지지 구간 연속 추적 엔진)")
-st.markdown("##### 💡 1. [종골 착지점] ~ [온몸 수직 상태]까지의 전 구간을 추적하여 무릎 붕괴를 잡아냅니다.")
+st.set_page_config(page_title="Rule 54 Racewalking VAR", layout="wide")
+st.title("🚨 Rule 54 공식 VAR (경보 전용 연속 추적 엔진)")
+st.markdown("##### 💡 1. 뻗은 앞발(종골)이 허리 중심축보다 '앞에 있는 모든 순간'을 연속 감시합니다.")
 st.markdown("##### 💡 2. 측정 축: '허리 중심축 - 무릎 중심 - 종골(뒤꿈치)'")
 st.write("---")
 
@@ -21,7 +21,7 @@ def calculate_angle(a, b, c):
     deg = np.abs(rad * 180.0 / np.pi)
     return 360 - deg if deg > 180 else deg
 
-st.error("⚠️ **10초 이내의 영상**을 올려주세요. 착지부터 수직 통과까지 다리 신전을 끝까지 추적합니다.")
+st.error("⚠️ **10초 이내의 경보 영상**을 올려주세요. 앞발이 몸통을 지나갈 때까지 무릎 붕괴를 추적합니다.")
 video_file = st.file_uploader("경보 영상 업로드 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
 
 if video_file:
@@ -32,18 +32,13 @@ if video_file:
     photo_finish_frames = []   
     flight_foul_frames = []
     
-    prev_stride_dist = 0
-    prev_trend = 0
-    prev_waist_x = 0
-    
     global_ground_y = 0.0
     flight_frames_count = 0 
     
-    # 💡 [핵심] 지지 구간(Support Phase) 연속 추적을 위한 상태 변수
-    tracking_phase = False
-    current_front_leg = None # 'L' or 'R'
-    min_angle_in_phase = 360.0
+    # 💡 [경보 전용] 걸음(Step) 추적 변수
+    prev_front_leg = None
     worst_foul_frame = None
+    min_angle_in_step = 360.0
     
     person_detected = False
 
@@ -55,7 +50,7 @@ if video_file:
         required_flight_frames = int(0.08 * fps)
         if required_flight_frames < 2: required_flight_frames = 2
 
-        with st.spinner(f"🕵️‍♂️ 영상 분석 중... (착지 후 온몸이 수직이 될 때까지 각도를 연속 추적합니다)"):
+        with st.spinner(f"🕵️‍♂️ 영상 분석 중... (달리기 로직 폐기, 걷기 기반 앞발 연속 추적 중)"):
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
@@ -73,60 +68,74 @@ if video_file:
                     def get_pt(landmark):
                         return [int(landmark.x * w), int(landmark.y * h)]
                     
-                    # 관절 및 💡 종골(HEEL) 좌표 가져오기
+                    # 좌표 가져오기 (종골, 무릎, 골반, 코)
                     l_h = get_pt(lm[mp_pose.PoseLandmark.LEFT_HIP])
                     r_h = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HIP])
                     l_k = get_pt(lm[mp_pose.PoseLandmark.LEFT_KNEE])
                     r_k = get_pt(lm[mp_pose.PoseLandmark.RIGHT_KNEE])
                     l_heel = get_pt(lm[mp_pose.PoseLandmark.LEFT_HEEL])
                     r_heel = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HEEL])
+                    nose_x = lm[mp_pose.PoseLandmark.NOSE].x * w
                     
                     # 허리 중심축 (골반 사이 정중앙)
                     waist_center = [int((l_h[0] + r_h[0]) / 2), int((l_h[1] + r_h[1]) / 2)]
                     
-                    if prev_waist_x == 0: prev_waist_x = waist_center[0]
-                    moving_right = waist_center[0] > prev_waist_x
+                    # 진행 방향 (코가 허리보다 어느 쪽에 있는가로 명확히 판별)
+                    moving_right = nose_x > waist_center[0]
                     
-                    # 종골(뒤꿈치) 기준 지면 높이 및 보폭
+                    # 현재 "앞발(Front Leg)"이 왼발인지 오른발인지 판별
+                    if moving_right:
+                        front_is_left = l_heel[0] > r_heel[0]
+                    else:
+                        front_is_left = l_heel[0] < r_heel[0]
+                        
+                    current_front_leg = 'L' if front_is_left else 'R'
+
+                    # 지면 기준선 업데이트
                     current_lowest_y = max(l_heel[1], r_heel[1])
                     if current_lowest_y > global_ground_y:
                         global_ground_y = current_lowest_y
                         
-                    stride_dist = abs(l_heel[0] - r_heel[0])
-                    trend = stride_dist - prev_stride_dist
                     annotated = img.copy()
 
                     # =========================================================
-                    # 🚨 [1단계] 배측굴곡 상태의 앞다리 착지 순간 포착 (추적 시작)
+                    # 🚨 [1단계] 걸음(Step) 전환 감지 및 초기화
                     # =========================================================
-                    if not tracking_phase and trend < 0 and prev_trend > 0 and stride_dist > (w * 0.1):
-                        tracking_phase = True # 💡 추적 레이더 ON
+                    # 앞발이 왼발->오른발(또는 반대)로 바뀌었다면, 새로운 걸음이 시작된 것!
+                    if current_front_leg != prev_front_leg:
+                        # 이전 걸음에서 파울이 있었다면 최종 바구니에 저장
+                        if worst_foul_frame is not None:
+                            photo_finish_frames.append(worst_foul_frame)
                         
-                        if moving_right:
-                            current_front_leg = 'L' if l_heel[0] > r_heel[0] else 'R'
-                        else:
-                            current_front_leg = 'L' if l_heel[0] < r_heel[0] else 'R'
-                            
-                        min_angle_in_phase = 360.0
+                        # 새로운 걸음을 위해 추적기 초기화
                         worst_foul_frame = None
+                        min_angle_in_step = 360.0
+                        prev_front_leg = current_front_leg
 
                     # =========================================================
-                    # 🚨 [2단계] 착지점 ~ 온몸이 수직이 될 때까지 연속 각도 측정
+                    # 🚨 [2단계] "앞발이 허리보다 앞에 있는가?" (연속 감시 구간)
                     # =========================================================
-                    if tracking_phase:
-                        f_heel = l_heel if current_front_leg == 'L' else r_heel
-                        f_knee = l_k if current_front_leg == 'L' else r_k
-                        
-                        # 각도 계산 (허리중심 - 무릎중심 - 종골)
+                    f_heel = l_heel if front_is_left else r_heel
+                    f_knee = l_k if front_is_left else r_k
+                    
+                    is_in_support_phase = False
+                    
+                    # 💡 달리기식 착지 정점 로직 폐기!
+                    # 종골(뒤꿈치)이 허리 중심축보다 '앞'에만 있다면 무조건 판독 구간!
+                    if moving_right and f_heel[0] > waist_center[0]:
+                        is_in_support_phase = True
+                    elif not moving_right and f_heel[0] < waist_center[0]:
+                        is_in_support_phase = True
+
+                    if is_in_support_phase:
+                        # 허리중심 - 무릎중심 - 종골 각도 계산
                         current_angle = calculate_angle(waist_center, f_knee, f_heel)
                         
+                        # 시각화 묘사 (앞발이 앞에 있을 때 선 긋기)
                         line_thick = max(4, int(w / 180))
-                        # 허리중심 -> 무릎중심 선
                         cv2.line(annotated, tuple(waist_center), tuple(f_knee), (0, 0, 255), line_thick, cv2.LINE_AA)
-                        # 무릎중심 -> 종골(디딤점) 선
                         cv2.line(annotated, tuple(f_knee), tuple(f_heel), (0, 0, 255), line_thick, cv2.LINE_AA)
                         
-                        # 축 시각화
                         cv2.circle(annotated, tuple(waist_center), 8, (255, 0, 255), -1) # 허리 축 (보라)
                         cv2.circle(annotated, tuple(f_knee), 8, (0, 255, 255), -1)      # 무릎 축 (노랑)
                         cv2.circle(annotated, tuple(f_heel), 8, (0, 255, 0), -1)        # 종골 디딤점 (초록)
@@ -134,24 +143,12 @@ if video_file:
                         cv2.putText(annotated, f"ANGLE: {current_angle:.1f}", (f_knee[0] + 20, f_knee[1]), 
                                     cv2.FONT_HERSHEY_SIMPLEX, max(0.8, w/900), (0, 255, 255), 3)
 
-                        # 가장 굽혀진 순간(최저 각도) 캡처 갱신
-                        if current_angle < min_angle_in_phase:
-                            min_angle_in_phase = current_angle
-                            if current_angle <= 170.0:
+                        # 170도 이하로 무너졌다면 파울 기록 갱신 (가장 심하게 꺾인 프레임 하나만 저장)
+                        if current_angle <= 170.0:
+                            if current_angle < min_angle_in_step:
+                                min_angle_in_step = current_angle
                                 cv2.putText(annotated, "BENT KNEE DETECTED", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,255), 3)
                                 worst_foul_frame = (current_angle, annotated.copy())
-
-                        # 💡 [추적 종료 조건] '온몸이 수직이 되기까지' = 허리 축이 종골(디딤점)을 넘어가는 순간
-                        if moving_right and waist_center[0] >= f_heel[0]:
-                            tracking_phase = False
-                        elif not moving_right and waist_center[0] <= f_heel[0]:
-                            tracking_phase = False
-                        elif stride_dist < (w * 0.03): # 예외: 발이 엇갈리기 시작할 때 강제 종료
-                            tracking_phase = False
-                            
-                        # 수직 구간을 통과하며 추적이 끝났을 때, 기록된 최악의 파울 프레임을 최종 저장
-                        if not tracking_phase and worst_foul_frame is not None:
-                            photo_finish_frames.append(worst_foul_frame)
 
                     # =========================================================
                     # 🚨 [룰 3] 체공 시간 측정: 0.08초 초과
@@ -168,9 +165,9 @@ if video_file:
                             flight_foul_frames.append(annotated.copy())
                         flight_frames_count = 0
 
-                    prev_stride_dist = stride_dist
-                    prev_trend = trend
-                    prev_waist_x = waist_center[0]
+            # 영상이 끝났을 때 마지막 걸음의 파울도 마저 담아주기
+            if worst_foul_frame is not None:
+                photo_finish_frames.append(worst_foul_frame)
 
         cap.release()
     finally:
@@ -182,11 +179,11 @@ if video_file:
         st.error("❌ 영상을 분석할 수 없습니다.")
     else:
         st.divider()
-        st.header("📸 Rule 54 연속 추적 VAR 판독 리포트")
+        st.header("📸 Rule 54 연속 추적 VAR 판독 리포트 (걷기 전용)")
         
         st.subheader(f"🔴 Bent Knee (수직 통과 전 170도 이하 붕괴): 총 {len(photo_finish_frames)}회 적발")
         if len(photo_finish_frames) > 0:
-            st.error("⚠️ 착지 시점부터 온몸이 수직이 되는 구간 내에서 '허리-무릎-종골' 각도가 170도 아래로 붕괴되었습니다. (가장 굽혀진 순간 박제)")
+            st.error("⚠️ 앞발(종골)이 허리보다 앞에 있는 모든 순간을 추적한 결과, 무릎이 170도 아래로 붕괴된 스텝들입니다. (해당 스텝 중 최저 각도 박제)")
             for i in range(0, len(photo_finish_frames), 3):
                 cols = st.columns(3)
                 for j in range(3):
@@ -195,7 +192,7 @@ if video_file:
                         with cols[j]:
                             st.image(foul[1], channels="RGB", caption=f"파울 #{i+j+1} (최저 각도: {foul[0]:.1f}°)")
         else:
-            st.success("✅ Bent Knee 통과: 착지 후 온몸이 수직이 될 때까지 전 구간에서 무릎이 완벽하게 잠겨(Locked) 있었습니다.")
+            st.success("✅ Bent Knee 통과: 앞발이 몸통을 통과하는 전 구간에서 무릎이 완벽하게 펴져 있었습니다.")
             
         st.write("---")
         
@@ -213,4 +210,4 @@ if video_file:
             st.success("✅ Loss of Contact 통과: 체공 시간이 0.08초 이하로 규칙을 준수했습니다.")
 
 st.write("---")
-st.info("💡 **동작 원리:** 배측굴곡 상태에서 앞발의 **종골(뒤꿈치)**이 땅에 닿는 순간부터 추적을 시작하여, **허리 중심축**이 종골 위를 통과하는 수직 상태에 도달할 때까지 매 프레임 무릎 각도를 검사합니다.")
+st.info("💡 **동작 원리 (걷기 역학 적용):** 달리기 식의 '최대 보폭점' 계산을 폐기했습니다. 앞발의 **종골(뒤꿈치)**이 **허리 중심축**보다 앞에 나와 있는 찰나의 모든 프레임을 1프레임 단위로 감시하여 가장 심하게 꺾인 파울 장면을 캡처합니다.")
