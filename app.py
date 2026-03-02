@@ -4,20 +4,21 @@ import cv2
 import numpy as np
 import tempfile
 import os
+from PIL import Image
 
 # 1. 전문가용 인터페이스 설정
 st.set_page_config(page_title="World Athletics AI Judge", layout="wide")
-st.title("🔬 Pro Racewalking AI Judge & Biomechanics Lab")
-st.markdown("##### 본 시스템은 World Athletics 규정을 준수하며, 측면(파울 판독)과 정면(리듬/효율 판독)을 모두 분석합니다.")
-
-# 촬영 구도 선택
-view_mode = st.radio("🎥 영상 촬영 구도 선택", ["측면 (Side View) - 무릎 파울 및 착지각 판독", "정면 (Front View) - 골반 리듬 및 좌우 밸런스 판독"], horizontal=True)
+st.title("🔬 Pro Racewalking AI Judge (3D 통합 분석)")
+st.markdown("##### 하나의 영상으로 Rule 54(측면) 위반 여부와 코어 밸런스(정면)를 동시에 정밀 판독합니다.")
+st.warning("🔒 업로드된 모든 영상은 AI가 분석 후 임시 처리되어 즉시 소멸됩니다.")
+st.write("---")
 
 # 2. AI 분석 엔진 초기화
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
+# 수학적 각도 계산 함수
 def calculate_angle(a, b, c):
     a, b, c = np.array(a), np.array(b), np.array(c)
     rad = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
@@ -32,39 +33,39 @@ def get_thigh_angle(h_l, k_l, h_r, k_r):
 def get_tilt_angle(p1, p2):
     dy = p2[1] - p1[1]
     dx = p2[0] - p1[0]
-    return np.degrees(np.arctan2(dy, dx))
+    return np.abs(np.degrees(np.arctan2(dy, dx)))
 
-# 3. 데이터 수집 및 분석 프로세스
-video_file = st.file_uploader("경보 분석 영상 업로드", type=['mp4', 'mov', 'avi'])
+# 3. 통합 영상 업로드 및 분석
+st.subheader("영상 업로드")
+st.error("⚠️ **10초 이내의 영상**만 올려주세요! (어느 각도에서 찍었든 AI가 3D 좌표로 동시 분석합니다)")
+video_file = st.file_uploader("경보 분석 영상 업로드 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
 
 if video_file:
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(video_file.read())
-    tfile.close()
+    tfile.close() 
     
     cap = cv2.VideoCapture(tfile.name)
     
     knee_stats, hip_tilt_stats = [], []
-    key_frame = None
+    key_frame_side = None  # 측면 판독용 프레임 (무릎 최대 신전)
+    key_frame_front = None # 정면 판독용 프레임 (골반 최대 기울기)
     max_knee = 0
     max_hip_tilt = 0
     frame_count = 0
     person_detected = False
 
-    with st.spinner("AI가 영상을 분석 중입니다... (최대 30초 소요)"):
+    with st.spinner("AI가 3D 공간 좌표를 매핑하여 측면과 정면의 핵심 역학을 동시 추출 중입니다..."):
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
             
             frame_count += 1
-            if frame_count % 3 != 0: 
-                continue
+            if frame_count % 3 != 0: continue # 속도 최적화
             
             height, width = frame.shape[:2]
-            if width > 800:
-                frame = cv2.resize(frame, (800, int(height * 800 / width)))
+            if width > 800: frame = cv2.resize(frame, (800, int(height * 800 / width)))
             
-            # 여기서 RGB 형식의 Numpy 배열로 만듦
             img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             res = pose.process(img)
             
@@ -79,77 +80,92 @@ if video_file:
                 l_a = [lm[mp_pose.PoseLandmark.LEFT_ANKLE].x, lm[mp_pose.PoseLandmark.LEFT_ANKLE].y]
                 l_f = [lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].x, lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].y]
 
-                # PIL 변환 없이 가장 안전한 Numpy 배열을 그대로 사용
                 annotated = img.copy()
                 mp_drawing.draw_landmarks(annotated, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                
+                # 오류 방지용 안전한 Numpy 이미지
+                safe_img = annotated.copy()
 
-                if "측면" in view_mode:
-                    k_ang = calculate_angle(l_h, l_k, l_a)
-                    a_ang = calculate_angle(l_k, l_a, l_f)
-                    t_ang = get_thigh_angle(l_h, l_k, r_h, r_k)
-                    knee_stats.append(k_ang)
+                # 1. 측면(Side) 데이터 추출
+                k_ang = calculate_angle(l_h, l_k, l_a)
+                a_ang = calculate_angle(l_k, l_a, l_f)
+                t_ang = get_thigh_angle(l_h, l_k, r_h, r_k)
+                knee_stats.append(k_ang)
 
-                    if k_ang > max_knee:
-                        max_knee = k_ang
-                        key_frame = {"img": annotated, "k": k_ang, "a": a_ang, "t": t_ang}
-                else:
-                    tilt = abs(get_tilt_angle(l_h, r_h))
-                    hip_tilt_stats.append(tilt)
+                if k_ang > max_knee:
+                    max_knee = k_ang
+                    key_frame_side = {"img": safe_img, "k": k_ang, "a": a_ang, "t": t_ang}
 
-                    if tilt > max_hip_tilt:
-                        max_hip_tilt = tilt
-                        key_frame = {"img": annotated, "tilt": tilt}
+                # 2. 정면(Front) 데이터 추출
+                tilt = get_tilt_angle(l_h, r_h)
+                hip_tilt_stats.append(tilt)
+
+                if tilt > max_hip_tilt:
+                    max_hip_tilt = tilt
+                    key_frame_front = {"img": safe_img, "tilt": tilt}
 
     cap.release()
-    os.unlink(tfile.name)
+    os.unlink(tfile.name) # 영상 영구 삭제
 
-    # 4. 결과 출력 및 예외 처리
+    # 4. 통합 결과 리포트 출력
     if not person_detected:
-        st.error("❌ 영상에서 선수를 인식하지 못했습니다.")
-    elif not key_frame:
+        st.error("❌ 영상에서 선수를 인식하지 못했습니다. 전신이 잘 보이는 영상을 올려주세요.")
+    elif not key_frame_side or not key_frame_front:
         st.warning("⚠️ 분석할 만한 뚜렷한 동작을 찾지 못했습니다.")
     else:
         st.divider()
-        col1, col2 = st.columns([1, 1.2])
+        st.subheader("🎯 3D AI 통합 포착 리포트")
         
-        with col1:
-            st.subheader("🎯 포착된 핵심 역학 프레임")
-            # 🔥 에러 100% 차단 로직: Numpy 배열임을 명시하고, 구버전 호환 명령어 사용
-            st.image(key_frame["img"], channels="RGB", use_column_width=True)
+        # 화면을 반으로 나누어 측면과 정면을 동시에 보여줌
+        col_side, col_front = st.columns(2)
+        
+        with col_side:
+            st.markdown("#### 1️⃣ 착지 역학 포착 (측면)")
+            st.image(key_frame_side["img"], channels="RGB", use_column_width=True)
+            st.metric("무릎 신전도 (Rule 54)", f"{key_frame_side['k']:.1f}°")
+            st.metric("발목 착지각 (제동력 판독)", f"{key_frame_side['a']:.1f}°")
             
-            if "측면" in view_mode:
-                st.markdown("**무릎 신전 데이터 (최근 프레임):**")
-                if knee_stats:
-                    st.code(" / ".join([f"{ang:.1f}°" for ang in knee_stats[-8:]]))
-            else:
-                st.markdown("**골반 수직 이동(Hip Drop) 기울기 데이터:**")
-                if hip_tilt_stats:
-                    st.code(" / ".join([f"{tilt:.1f}°" for tilt in hip_tilt_stats[-8:]]))
-
-        with col2:
-            st.subheader("⚖️ 글로벌 엘리트 기준 기술 판독")
-            if "측면" in view_mode:
-                if key_frame["k"] >= 178:
-                    st.success(f"🔥 **[통과] 무릎 신전도: {key_frame['k']:.1f}°**\n\n완벽한 강체(Rigid lever)를 유지하고 있습니다.")
-                else:
-                    st.error(f"⚠️ **[위험] 무릎 신전도: {key_frame['k']:.1f}° (Bent Knee)**\n\n실격 사유가 감지됩니다.")
-                st.info(f"✅ **대퇴부 교차각: {key_frame['t']:.1f}°** (이상적 범위: 50~65°)")
-                st.warning(f"⚠️ **발목 착지각: {key_frame['a']:.1f}°** (글로벌 기준: 23~27°)")
-            else:
-                tilt_val = key_frame["tilt"]
-                st.metric("최대 골반 기울기 (Max Pelvic Drop)", f"{tilt_val:.1f}°")
-                if tilt_val < 5:
-                    st.error("⚠️ **[리듬 결여 / 상하 진동 발생]**\n\n골반 수직 이동이 부족하여 충격이 어깨로 전달됩니다.")
-                elif 5 <= tilt_val <= 12:
-                    st.success("🔥 **[최적의 역학 리듬]**\n\n이상적인 골반 기울기(5~12도)로 체중 이동이 물 흐르듯 자연스럽습니다.")
-                else:
-                    st.warning("⚠️ **[과도한 골반 붕괴]**\n\n골반이 12도 이상 떨어집니다. 코어(중둔근) 강화가 필요합니다.")
+        with col_front:
+            st.markdown("#### 2️⃣ 코어 밸런스 포착 (정면)")
+            st.image(key_frame_front["img"], channels="RGB", use_column_width=True)
+            st.metric("최대 골반 기울기 (Hip Drop)", f"{key_frame_front['tilt']:.1f}°")
+            st.caption("충격 흡수 및 시계추 리듬 평가 지표")
 
         st.divider()
-        st.subheader("🎓 전문 생체역학 처방 요약")
-        if "측면" in view_mode:
-            avg_knee = np.mean(knee_stats) if knee_stats else 0
-            st.write(f"글로벌 엘리트 데이터와 대조한 결과, 평균 무릎 신전도({avg_knee:.1f}°)는 안정적이나 착지각 제어가 필요합니다. 리프팅 방지를 위해 보폭 확장을 억제하세요.")
-        else:
-            avg_tilt = np.mean(hip_tilt_stats) if hip_tilt_stats else 0
-            st.write(f"정면 리듬 분석 결과, 평균 골반 교차 기울기는 **{avg_tilt:.1f}°**입니다. 양 어깨의 수평은 유지하되 골반만 리드미컬하게 교차하는 훈련에 집중하십시오.")
+        st.subheader("⚖️ 글로벌 스탠다드 종합 판독")
+        
+        res_col1, res_col2 = st.columns(2)
+        
+        with res_col1:
+            st.markdown("**[측면 규정 위반 및 효율]**")
+            if key_frame_side["k"] >= 178:
+                st.success(f"🔥 **[통과] 완벽한 무릎 강체 (Rigid lever)**")
+            else:
+                st.error(f"⚠️ **[경고] Bent Knee (실격 사유 감지)**")
+            
+            if 23 <= key_frame_side["a"] <= 27:
+                st.info("✅ 이상적인 발목 착지각을 유지 중입니다.")
+            else:
+                st.warning("⚠️ 발목 착지각 제어가 불안정하여 제동력이 발생합니다.")
+
+        with res_col2:
+            st.markdown("**[정면 골반 리듬 밸런스]**")
+            tilt_val = key_frame_front["tilt"]
+            if tilt_val < 5:
+                st.error("⚠️ **[리듬 결여]** 골반 수직 이동이 너무 부족해 상하 진동이 발생합니다.")
+            elif 5 <= tilt_val <= 12:
+                st.success("🔥 **[리듬 최적]** 물 흐르듯 완벽한 시계추 리듬(Pendulum rhythm)이 형성 중입니다.")
+            else:
+                st.warning("⚠️ **[골반 붕괴]** 골반이 12도 이상 떨어집니다. 중둔근 강화가 시급합니다.")
+
+        st.divider()
+        st.subheader("🎓 전문가용 종합 처방전")
+        avg_knee = np.mean(knee_stats) if knee_stats else 0
+        avg_tilt = np.mean(hip_tilt_stats) if hip_tilt_stats else 0
+        
+        st.write(f"""
+        하나의 질주 과정에서 측면의 추진력과 정면의 밸런스를 종합 판독한 결과입니다. 
+        전체 구간 평균 무릎 신전도는 **{avg_knee:.1f}°**, 평균 골반 기울기는 **{avg_tilt:.1f}°**로 기록되었습니다.
+        어느 한쪽이 무너지면 기록은 단축되지 않습니다. 착지 시 무릎을 일직선으로 펴는 동시에, 
+        양 어깨의 수평을 유지하며 골반만 리드미컬하게 위아래로 교차시키는 **'어깨-골반 분리(Shoulder-Pelvis Dissociation)'** 훈련을 병행하십시오.
+        """)
