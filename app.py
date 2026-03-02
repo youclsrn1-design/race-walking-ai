@@ -10,7 +10,7 @@ from PIL import Image
 st.set_page_config(page_title="World Athletics AI Judge", layout="wide")
 st.title("🔬 Pro Racewalking AI Judge (3D 통합 분석)")
 st.markdown("##### 하나의 영상으로 Rule 54(측면) 위반 여부와 코어 밸런스(정면)를 동시에 정밀 판독합니다.")
-st.warning("🔒 업로드된 모든 영상은 AI가 분석 후 임시 처리되어 즉시 소멸됩니다.")
+st.warning("🔒 업로드된 모든 영상은 AI가 분석 후 임시 처리되어 즉시 소멸됩니다. (서버 무단 저장 절대 불가)")
 st.write("---")
 
 # 2. AI 분석 엔진 초기화
@@ -45,67 +45,71 @@ if video_file:
     tfile.write(video_file.read())
     tfile.close() 
     
-    cap = cv2.VideoCapture(tfile.name)
-    
     knee_stats, hip_tilt_stats = [], []
-    key_frame_side = None  # 측면 판독용 프레임 (무릎 최대 신전)
-    key_frame_front = None # 정면 판독용 프레임 (골반 최대 기울기)
+    key_frame_side = None
+    key_frame_front = None
     max_knee = 0
     max_hip_tilt = 0
     frame_count = 0
     person_detected = False
 
-    with st.spinner("AI가 3D 공간 좌표를 매핑하여 측면과 정면의 핵심 역학을 동시 추출 중입니다..."):
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret: break
-            
-            frame_count += 1
-            if frame_count % 3 != 0: continue # 속도 최적화
-            
-            height, width = frame.shape[:2]
-            if width > 800: frame = cv2.resize(frame, (800, int(height * 800 / width)))
-            
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(img)
-            
-            if res.pose_landmarks:
-                person_detected = True
-                lm = res.pose_landmarks.landmark
+    # 🔥 try-finally 블록: 에러가 나도, 사용자가 중간에 나가도 무조건 파일 삭제 보장!
+    try:
+        cap = cv2.VideoCapture(tfile.name)
+        with st.spinner("AI가 3D 공간 좌표를 매핑하여 측면과 정면의 핵심 역학을 동시 추출 중입니다..."):
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret: break
                 
-                l_h = [lm[mp_pose.PoseLandmark.LEFT_HIP].x, lm[mp_pose.PoseLandmark.LEFT_HIP].y]
-                r_h = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
-                l_k = [lm[mp_pose.PoseLandmark.LEFT_KNEE].x, lm[mp_pose.PoseLandmark.LEFT_KNEE].y]
-                r_k = [lm[mp_pose.PoseLandmark.RIGHT_KNEE].x, lm[mp_pose.PoseLandmark.RIGHT_KNEE].y]
-                l_a = [lm[mp_pose.PoseLandmark.LEFT_ANKLE].x, lm[mp_pose.PoseLandmark.LEFT_ANKLE].y]
-                l_f = [lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].x, lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].y]
-
-                annotated = img.copy()
-                mp_drawing.draw_landmarks(annotated, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                frame_count += 1
+                if frame_count % 3 != 0: continue # 속도 최적화
                 
-                # 오류 방지용 안전한 Numpy 이미지
-                safe_img = annotated.copy()
+                height, width = frame.shape[:2]
+                # 메모리 폭파 방지: 가로 해상도를 640으로 최적화하여 램 용량 방어
+                if width > 640: frame = cv2.resize(frame, (640, int(height * 640 / width)))
+                
+                img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = pose.process(img)
+                
+                if res.pose_landmarks:
+                    person_detected = True
+                    lm = res.pose_landmarks.landmark
+                    
+                    l_h = [lm[mp_pose.PoseLandmark.LEFT_HIP].x, lm[mp_pose.PoseLandmark.LEFT_HIP].y]
+                    r_h = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
+                    l_k = [lm[mp_pose.PoseLandmark.LEFT_KNEE].x, lm[mp_pose.PoseLandmark.LEFT_KNEE].y]
+                    r_k = [lm[mp_pose.PoseLandmark.RIGHT_KNEE].x, lm[mp_pose.PoseLandmark.RIGHT_KNEE].y]
+                    l_a = [lm[mp_pose.PoseLandmark.LEFT_ANKLE].x, lm[mp_pose.PoseLandmark.LEFT_ANKLE].y]
+                    l_f = [lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].x, lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX].y]
 
-                # 1. 측면(Side) 데이터 추출
-                k_ang = calculate_angle(l_h, l_k, l_a)
-                a_ang = calculate_angle(l_k, l_a, l_f)
-                t_ang = get_thigh_angle(l_h, l_k, r_h, r_k)
-                knee_stats.append(k_ang)
+                    annotated = img.copy()
+                    mp_drawing.draw_landmarks(annotated, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                    
+                    safe_img = annotated.copy()
 
-                if k_ang > max_knee:
-                    max_knee = k_ang
-                    key_frame_side = {"img": safe_img, "k": k_ang, "a": a_ang, "t": t_ang}
+                    # 1. 측면(Side) 데이터 추출
+                    k_ang = calculate_angle(l_h, l_k, l_a)
+                    a_ang = calculate_angle(l_k, l_a, l_f)
+                    t_ang = get_thigh_angle(l_h, l_k, r_h, r_k)
+                    knee_stats.append(k_ang)
 
-                # 2. 정면(Front) 데이터 추출
-                tilt = get_tilt_angle(l_h, r_h)
-                hip_tilt_stats.append(tilt)
+                    if k_ang > max_knee:
+                        max_knee = k_ang
+                        key_frame_side = {"img": safe_img, "k": k_ang, "a": a_ang, "t": t_ang}
 
-                if tilt > max_hip_tilt:
-                    max_hip_tilt = tilt
-                    key_frame_front = {"img": safe_img, "tilt": tilt}
+                    # 2. 정면(Front) 데이터 추출
+                    tilt = get_tilt_angle(l_h, r_h)
+                    hip_tilt_stats.append(tilt)
 
-    cap.release()
-    os.unlink(tfile.name) # 영상 영구 삭제
+                    if tilt > max_hip_tilt:
+                        max_hip_tilt = tilt
+                        key_frame_front = {"img": safe_img, "tilt": tilt}
+
+        cap.release()
+    finally:
+        # 🚀 무료 서버 평생 유지의 비결: 무슨 일이 있어도 임시 파일은 찢어버립니다.
+        if os.path.exists(tfile.name):
+            os.unlink(tfile.name)
 
     # 4. 통합 결과 리포트 출력
     if not person_detected:
@@ -116,7 +120,6 @@ if video_file:
         st.divider()
         st.subheader("🎯 3D AI 통합 포착 리포트")
         
-        # 화면을 반으로 나누어 측면과 정면을 동시에 보여줌
         col_side, col_front = st.columns(2)
         
         with col_side:
@@ -169,3 +172,7 @@ if video_file:
         어느 한쪽이 무너지면 기록은 단축되지 않습니다. 착지 시 무릎을 일직선으로 펴는 동시에, 
         양 어깨의 수평을 유지하며 골반만 리드미컬하게 위아래로 교차시키는 **'어깨-골반 분리(Shoulder-Pelvis Dissociation)'** 훈련을 병행하십시오.
         """)
+
+# 🔥 피드백 및 고객 지원 이메일 추가
+st.write("---")
+st.info("💡 **시스템 개선을 위한 소중한 의견을 들려주세요!**\n\n버그 신고, 추가 판독 지표 제안 등 어떠한 피드백이든 적극 수용합니다.\n\n📧 **문의처:** [youclsrn1@gmail.com](mailto:youclsrn1@gmail.com)")
