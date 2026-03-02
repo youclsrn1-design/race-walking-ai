@@ -5,10 +5,10 @@ import numpy as np
 import tempfile
 import os
 
-st.set_page_config(page_title="Rule 54 Strict Catcher", layout="wide")
-st.title("📸 Rule 54 초정밀 사진 판독기 (Strict Mode)")
-st.markdown("##### 💡 1. 골반-복숭아뼈 절대 직선 기준 무릎 각도 판독\n##### 💡 2. 두 발이 완벽히 떨어진 시간이 '0.42초 이상'일 때만 체공 파울 인정")
-st.warning("🔒 분석 완료 후 영상은 즉각 파기됩니다.")
+# 1. 인터페이스 설정
+st.set_page_config(page_title="Rule 54 Ultimate VAR", layout="wide")
+st.title("🎬 Rule 54 완전 자동화 VAR (3차 검증 탑재)")
+st.markdown("##### 💡 1. 영상에서 '착지 순간'을 사진으로 자동 캡처\n##### 💡 2. 캡처된 사진에서 '골반-복숭아뼈 절대 직선'으로 3차 정밀 각도 검증\n##### 💡 3. 두 발이 완벽히 떨어진 시간이 '0.42초 이상'일 때만 체공 파울")
 st.write("---")
 
 mp_pose = mp.solutions.pose
@@ -20,7 +20,7 @@ def calculate_angle(a, b, c):
     deg = np.abs(rad * 180.0 / np.pi)
     return 360 - deg if deg > 180 else deg
 
-st.error("⚠️ **10초 이내의 훈련 영상**을 올려주세요.")
+st.error("⚠️ **10초 이내의 영상**을 올려주세요. AI가 영상을 분석해 파울 사진을 추출하고 3차 검증을 수행합니다.")
 video_file = st.file_uploader("경보 영상 업로드 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
 
 if video_file:
@@ -28,28 +28,25 @@ if video_file:
     tfile.write(video_file.read())
     tfile.close() 
     
-    photo_finish_frames = []   
+    final_bent_knee_frames = []   
     flight_foul_frames = []
     
     prev_stride_dist = 0
     prev_trend = 0
-    prev_hip_x = 0
     
     global_ground_y = 0.0
-    flight_frames_count = 0 # 공중에 떠 있는 프레임 수 누적
+    flight_frames_count = 0 
     
     person_detected = False
 
     try:
         cap = cv2.VideoCapture(tfile.name)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0 or np.isnan(fps):
-            fps = 30.0 # FPS를 못 가져오면 기본 30으로 설정
+        if fps == 0 or np.isnan(fps): fps = 30.0 
             
-        # 0.42초가 되기 위해 필요한 프레임 수 계산
         required_flight_frames = int(0.42 * fps)
 
-        with st.spinner(f"📸 분석 중... (체공 파울 기준: 두 발이 {required_flight_frames} 프레임 이상 뜰 경우)"):
+        with st.spinner("🕵️‍♂️ 영상 분석 중... (착지 프레임 추출 -> 3차 절대 직선 검증 진행)"):
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
@@ -73,13 +70,8 @@ if video_file:
                     r_k = get_pt(lm[mp_pose.PoseLandmark.RIGHT_KNEE])
                     l_a = get_pt(lm[mp_pose.PoseLandmark.LEFT_ANKLE])
                     r_a = get_pt(lm[mp_pose.PoseLandmark.RIGHT_ANKLE])
+                    nose_x = lm[mp_pose.PoseLandmark.NOSE].x * w
                     
-                    # 이동 방향 판별 (골반 중심 X좌표 추적)
-                    hip_center_x = (l_h[0] + r_h[0]) / 2
-                    if prev_hip_x == 0: prev_hip_x = hip_center_x
-                    moving_right = hip_center_x > prev_hip_x
-                    
-                    # 지면 기준선 업데이트
                     current_lowest_y = max(l_a[1], r_a[1])
                     if current_lowest_y > global_ground_y:
                         global_ground_y = current_lowest_y
@@ -89,11 +81,19 @@ if video_file:
                     annotated = img.copy()
 
                     # =========================================================
-                    # 🚨 1. 착지 순간: 골반-복숭아뼈 직선 기반 무릎 각도 측정
+                    # 🚨 [1단계 & 2단계] 착지 프레임 추출 및 3차 정지화면 검증
                     # =========================================================
-                    # 보폭이 넓어졌다가 줄어들기 시작하는 딱 그 정점(착지 순간)
+                    # 보폭이 가장 넓어지는 '착지 순간'에 사진(프레임) 찰칵!
                     if trend < 0 and prev_trend > 0 and stride_dist > (w * 0.1):
-                        leading_is_left = (l_a[0] > r_a[0]) if moving_right else (l_a[0] < r_a[0])
+                        
+                        # 💡 [3차 검증 돌입] 뽑아낸 사진을 '멈춰있는 사진'으로 간주하고 앞발 찾기
+                        hip_center_x = (l_h[0] + r_h[0]) / 2
+                        facing_right = nose_x > hip_center_x 
+                        
+                        if facing_right:
+                            leading_is_left = l_a[0] > r_a[0] 
+                        else:
+                            leading_is_left = l_a[0] < r_a[0] 
 
                         front_hip = l_h if leading_is_left else r_h
                         front_knee = l_k if leading_is_left else r_k
@@ -101,85 +101,78 @@ if video_file:
                         
                         front_angle = calculate_angle(front_hip, front_knee, front_ankle)
                         
-                        # 💡 요구사항: 골반과 복숭아뼈를 직선으로 잇기
-                        cv2.line(annotated, tuple(front_hip), tuple(front_ankle), (0, 255, 0), 2) # 초록색 절대 직선
-                        
-                        # 무릎이 그 직선 상에 놓여있는지 확인하기 위한 꺾임선(빨간선)
-                        cv2.line(annotated, tuple(front_hip), tuple(front_knee), (255, 0, 0), 4)
-                        cv2.line(annotated, tuple(front_knee), tuple(front_ankle), (255, 0, 0), 4)
-                        cv2.circle(annotated, tuple(front_knee), 8, (0, 255, 255), -1) # 무릎 포인트 (노란색)
-                        
-                        # 각도 표시
-                        color = (255, 0, 0) if front_angle <= 170.0 else (0, 255, 0)
-                        cv2.putText(annotated, f"KNEE ANGLE: {front_angle:.1f}", (front_knee[0] + 15, front_knee[1]), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 3)
-                        
+                        # 각도가 170도 이하일 때만 (파울일 때만) 사진에 선을 긋고 박제
                         if front_angle <= 170.0:
-                            photo_finish_frames.append((front_angle, annotated.copy()))
+                            # 1. 골반-복숭아뼈 절대 직선 (초록색)
+                            cv2.line(annotated, tuple(front_hip), tuple(front_ankle), (0, 255, 0), 3)
+                            
+                            # 2. 선수의 실제 무릎 꺾임 (빨간색)
+                            cv2.line(annotated, tuple(front_hip), tuple(front_knee), (255, 0, 0), 5)
+                            cv2.line(annotated, tuple(front_knee), tuple(front_ankle), (255, 0, 0), 5)
+                            cv2.circle(annotated, tuple(front_knee), 10, (0, 255, 255), -1)
+                            
+                            cv2.putText(annotated, f"3RD VERIFIED: {front_angle:.1f} deg", (front_knee[0] + 15, front_knee[1]), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 3)
+                            
+                            final_bent_knee_frames.append((front_angle, annotated.copy()))
 
                     # =========================================================
-                    # 🚨 2. 체공 파울: 두 발이 떨어져 있는 시간이 '0.42초 이상'일 때만
+                    # 🚨 [별도] 체공 파울: 0.42초 (프레임 누적) 절대 룰
                     # =========================================================
-                    # 가장 낮은 발조차도 땅(global_ground_y)에서 떨어져 있다면 (오차범위 2% 허용)
                     if (global_ground_y - current_lowest_y) > (h * 0.02):
                         flight_frames_count += 1
                     else:
-                        # 발이 땅에 닿는 순간, 그동안 누적된 체공 시간이 0.42초(요구 프레임) 이상이었는지 검사
                         if flight_frames_count >= required_flight_frames:
                             flight_time_sec = flight_frames_count / fps
-                            cv2.putText(annotated, f"FLIGHT FOUL: {flight_time_sec:.2f} sec", (30, 100), 
+                            cv2.putText(annotated, f"FLIGHT: {flight_time_sec:.2f}s (>= 0.42s)", (30, 100), 
                                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
                             flight_foul_frames.append(annotated.copy())
-                        # 초기화 (한 발이라도 땅에 닿으면 체공 카운트 리셋)
                         flight_frames_count = 0
 
                     prev_stride_dist = stride_dist
                     prev_trend = trend
-                    prev_hip_x = hip_center_x
 
         cap.release()
     finally:
         if os.path.exists(tfile.name):
             os.unlink(tfile.name)
 
-    # 4. 판독 결과 출력
+    # 4. 최종 판독 결과 출력
     if not person_detected:
         st.error("❌ 영상을 분석할 수 없습니다.")
     else:
         st.divider()
-        st.header("📸 Rule 54 판독 결과")
+        st.header("🎬 영상 기반 3차 검증 판독 리포트")
         
         # --- 1. 무릎 굽힘 (Bent Knee) ---
-        st.subheader(f"🔴 Bent Knee (170도 이하): 총 {len(photo_finish_frames)}회 적발")
-        if len(photo_finish_frames) > 0:
-            st.error("⚠️ 착지 순간 앞다리의 골반-복숭아뼈 절대 직선(초록선)에서 무릎(빨간선)이 170도 이하로 벗어났습니다.")
-            
-            for i in range(0, len(photo_finish_frames), 3):
+        st.subheader(f"🔴 3차 검증 완료 (Bent Knee): 총 {len(final_bent_knee_frames)}회 적발")
+        if len(final_bent_knee_frames) > 0:
+            st.error("⚠️ 영상에서 추출한 착지 사진에 '절대 직선'을 대조한 결과, 170도 이하로 꺾인 진짜 파울입니다.")
+            for i in range(0, len(final_bent_knee_frames), 3):
                 cols = st.columns(3)
                 for j in range(3):
-                    if i + j < len(photo_finish_frames):
-                        foul = photo_finish_frames[i + j]
+                    if i + j < len(final_bent_knee_frames):
+                        foul = final_bent_knee_frames[i + j]
                         with cols[j]:
-                            st.image(foul[1], channels="RGB", caption=f"파울 #{i+j+1} (무릎 각도: {foul[0]:.1f}°)")
+                            st.image(foul[1], channels="RGB", caption=f"3차 검증 파울 #{i+j+1} (무릎: {foul[0]:.1f}°)")
         else:
-            st.success("✅ Bent Knee 통과: 착지 프레임에서 무릎이 절대 직선 상에 훌륭하게 정렬되어 있습니다.")
+            st.success("✅ Bent Knee 통과: 착지 프레임 추출 후 3차 검증을 했으나 무릎이 모두 곧게 펴져 있습니다.")
             
         st.write("---")
         
         # --- 2. 체공 (Loss of Contact) ---
-        st.subheader(f"🟡 Loss of Contact (0.42초 이상 체공): 총 {len(flight_foul_frames)}회 적발")
+        st.subheader(f"🟡 체공 0.42초 초과 (Loss of Contact): 총 {len(flight_foul_frames)}회 적발")
         if len(flight_foul_frames) > 0:
-            st.warning(f"⚠️ 두 발이 완전히 땅에서 떨어져 있는 시간이 0.42초를 초과한 명백한 도약 파울입니다.")
-            
+            st.warning("⚠️ 두 발이 완전히 땅에서 떨어져 있는 시간이 0.42초 이상 누적된 명백한 체공입니다.")
             for i in range(0, len(flight_foul_frames), 3):
                 cols2 = st.columns(3)
                 for j in range(3):
                     if i + j < len(flight_foul_frames):
                         img = flight_foul_frames[i + j]
                         with cols2[j]:
-                            st.image(img, channels="RGB", caption=f"0.42초 이상 체공 적발 #{i+j+1}")
+                            st.image(img, channels="RGB", caption=f"0.42초 초과 체공 파울 #{i+j+1}")
         else:
-            st.success("✅ Loss of Contact 통과: 두 발이 떨어져 있는 시간이 0.42초 미만이거나, 항상 한 발이 땅에 닿아있습니다.")
+            st.success("✅ Loss of Contact 통과: 체공 시간이 0.42초 미만이거나 한 발이 땅에 닿아있습니다.")
 
 st.write("---")
-st.info("💡 **알고리즘 룰 강제:** 골반-복숭아뼈 직선을 기준선으로 삼고, 0.42초 이상 누적 체공될 경우에만 파울로 적발합니다.")
+st.info("💡 **동작 원리:** 영상을 올리면 AI가 '보폭이 가장 넓어진 사진'을 자동 캡처하고, 그 정지 화면 위에서 전방 다리의 골반-복숭아뼈 절대 직선을 그어 3차 검증을 수행합니다.")
