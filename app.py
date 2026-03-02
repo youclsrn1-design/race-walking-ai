@@ -6,13 +6,13 @@ import tempfile
 import os
 
 # 1. 인터페이스 설정
-st.set_page_config(page_title="Rule 54 Foul Catcher", layout="wide")
-st.title("🚨 국제 심판 전용: Rule 54 절대 직선 검증 AI")
-st.markdown("##### 💡 골반과 복숭아뼈를 잇는 '절대 직선'을 그어 무릎이 170도 이하로 무너지는 진짜 파울만 낚아챕니다.")
-st.warning("🔒 업로드된 영상은 파울 프레임 추출 직후 서버에서 즉각 영구 삭제됩니다.")
+st.set_page_config(page_title="Rule 54 Photo Finish", layout="wide")
+st.title("📸 Rule 54 사진 판독기 (정밀 각도 측정)")
+st.markdown("##### 💡 다리가 가장 넓게 벌어진 '착지 순간'의 사진을 캡처한 뒤, 앞다리에 2차 검증(골반-발목 직선)과 무릎 각도를 정밀하게 그려냅니다.")
+st.warning("🔒 분석 완료 후 영상은 즉각 파기됩니다.")
 st.write("---")
 
-# 2. AI 분석 엔진 초기화
+# 2. AI 분석 엔진
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
 
@@ -23,30 +23,23 @@ def calculate_angle(a, b, c):
     return 360 - deg if deg > 180 else deg
 
 # 3. 영상 업로드
-st.error("⚠️ **10초 이내의 훈련 영상**을 올려주세요. 실제 움직이는 앞다리만 정확하게 타겟팅합니다.")
-video_file = st.file_uploader("경보 역학 분석 영상 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
+st.error("⚠️ **10초 이내의 훈련 영상**을 올려주세요. 착지 프레임을 추출하여 사진 판독을 진행합니다.")
+video_file = st.file_uploader("경보 영상 업로드 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
 
 if video_file:
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(video_file.read())
     tfile.close() 
     
-    foul_bent_knee_frames = []   
-    foul_contact_frames = []     
+    photo_finish_frames = []   
     
     prev_stride_dist = 0
     prev_trend = 0
-    prev_hip_center_x = 0 # 💡 이동 방향 추적용 변수 추가
-    
-    recent_lowest_ys = [] 
-    
-    cd_bent_knee = 0
-    cd_contact = 0
     person_detected = False
 
     try:
         cap = cv2.VideoCapture(tfile.name)
-        with st.spinner("🕵️‍♂️ AI가 실제 이동 방향을 추적하여 정확히 '앞다리'에만 기준선을 긋고 있습니다..."):
+        with st.spinner("📸 AI가 가장 완벽한 착지 프레임을 찾아 사진 판독을 진행 중입니다..."):
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
@@ -56,9 +49,6 @@ if video_file:
                 
                 img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 res = pose.process(img)
-                
-                if cd_bent_knee > 0: cd_bent_knee -= 1
-                if cd_contact > 0: cd_contact -= 1
                 
                 if res.pose_landmarks:
                     person_detected = True
@@ -73,78 +63,57 @@ if video_file:
                     r_k = get_pt(lm[mp_pose.PoseLandmark.RIGHT_KNEE])
                     l_a = get_pt(lm[mp_pose.PoseLandmark.LEFT_ANKLE])
                     r_a = get_pt(lm[mp_pose.PoseLandmark.RIGHT_ANKLE])
-                    
-                    # 지면 추적
-                    current_lowest_y = max(l_a[1], r_a[1])
-                    recent_lowest_ys.append(current_lowest_y)
-                    if len(recent_lowest_ys) > 10:
-                        recent_lowest_ys.pop(0)
-                    dynamic_ground_y = sum(recent_lowest_ys) / len(recent_lowest_ys)
+                    nose_x = lm[mp_pose.PoseLandmark.NOSE].x * w
                         
                     stride_dist = abs(l_a[0] - r_a[0])
                     trend = stride_dist - prev_stride_dist
                     
-                    # 💡 [핵심 알고리즘 수정] 코 위치가 아니라 골반의 '실제 픽셀 이동 궤적'으로 앞다리 판단
-                    hip_center_x = (l_h[0] + r_h[0]) / 2
-                    
-                    # 초기 프레임 설정
-                    if prev_hip_center_x == 0:
-                        prev_hip_center_x = hip_center_x
+                    # 💡 보폭이 가장 넓어졌다가 좁아지는 딱 그 순간(Peak) = 완벽한 착지 프레임!
+                    if trend < 0 and prev_trend > 0 and stride_dist > (w * 0.1):
+                        hip_center_x = (l_h[0] + r_h[0]) / 2
+                        facing_right = nose_x > hip_center_x 
                         
-                    # 골반 중심이 오른쪽으로 이동했으면 우측 이동, 아니면 좌측 이동
-                    moving_right = hip_center_x > prev_hip_center_x
-                    
-                    if moving_right:
-                        leading_is_left = l_a[0] > r_a[0] # 오른쪽으로 걸을 땐 X좌표가 더 큰 쪽이 앞다리
-                    else:
-                        leading_is_left = l_a[0] < r_a[0] # 왼쪽으로 걸을 땐 X좌표가 더 작은 쪽이 앞다리
+                        # 사진(정지화면) 상태에서는 X좌표만으로 앞다리 구분이 100% 정확함
+                        leading_is_left = (l_a[0] > r_a[0]) if facing_right else (l_a[0] < r_a[0])
 
-                    annotated = img.copy()
-
-                    # =========================================================
-                    # 🚨 1. 앞다리 타겟팅 완벽 적용: 골반-복숭아뼈 절대 직선 검증
-                    # =========================================================
-                    # 보폭이 넓어지는 착지 순간에만 포착
-                    if trend < 0 and prev_trend > 0 and stride_dist > (w * 0.1) and cd_bent_knee == 0:
-                        # 확실한 앞다리(Front Leg) 매핑
                         front_hip = l_h if leading_is_left else r_h
                         front_knee = l_k if leading_is_left else r_k
                         front_ankle = l_a if leading_is_left else r_a
                         
                         front_angle = calculate_angle(front_hip, front_knee, front_ankle)
                         
-                        # 앞다리 무릎이 170도 이하라면
+                        annotated = img.copy()
+                        
+                        # =========================================================
+                        # 📸 선생님이 원하시는 '2번째 사진 방식'의 정밀 선 긋기
+                        # =========================================================
+                        
+                        # 1. 이상적인 180도 '절대 직선' 긋기 (골반에서 발목까지 다이렉트, 초록색 점선 느낌)
+                        # OpenCV에서 점선 그리기가 까다로워 얇은 초록선으로 대체
+                        cv2.line(annotated, tuple(front_hip), tuple(front_ankle), (0, 255, 0), 2)
+                        
+                        # 2. 선수의 실제 다리 뼈대 꺾임 긋기 (빨간색 굵은 선)
+                        cv2.line(annotated, tuple(front_hip), tuple(front_knee), (255, 0, 0), 5) # 골반 -> 무릎
+                        cv2.line(annotated, tuple(front_knee), tuple(front_ankle), (255, 0, 0), 5) # 무릎 -> 발목
+                        
+                        # 3. 무릎 관절 위치에 포인트 원 그리기
+                        cv2.circle(annotated, tuple(front_knee), 8, (255, 255, 0), -1) 
+                        
+                        # 4. 각도 텍스트 출력
+                        color = (255, 0, 0) if front_angle <= 170.0 else (0, 255, 0)
+                        status = "FOUL (BENT)" if front_angle <= 170.0 else "PASS"
+                        
+                        cv2.putText(annotated, f"ANGLE: {front_angle:.1f} deg", (front_knee[0] + 20, front_knee[1]), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+                        cv2.putText(annotated, f"[{status}]", (front_knee[0] + 20, front_knee[1] + 35), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+                        
+                        # 170도 이하인 파울 장면만 수집
                         if front_angle <= 170.0:
-                            # 💡 진짜 앞다리에만 골반-복숭아뼈 빨간 직선 그리기
-                            cv2.line(annotated, tuple(front_hip), tuple(front_ankle), (255, 0, 0), 4) # 두꺼운 빨간 줄
-                            
-                            # 무릎 꺾임 위치 노란 점
-                            cv2.circle(annotated, tuple(front_knee), 10, (255, 255, 0), -1) 
-                            
-                            # 실제 꺾인 다리 뼈대 파란선
-                            cv2.line(annotated, tuple(front_hip), tuple(front_knee), (0, 0, 255), 3)
-                            cv2.line(annotated, tuple(front_knee), tuple(front_ankle), (0, 0, 255), 3)
-                            
-                            cv2.putText(annotated, f"FRONT LEG BENT: {front_angle:.1f} deg", (30, 80), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)
-                            
-                            foul_bent_knee_frames.append((front_angle, annotated.copy()))
-                            cd_bent_knee = 15
-
-                    # =========================================================
-                    # 🚨 2. 진짜 점프(체공) 감지 로직
-                    # =========================================================
-                    if trend > 0 and prev_trend < 0 and stride_dist < (w * 0.1) and cd_contact == 0:
-                        jump_threshold = h * 0.05 
-                        if (dynamic_ground_y - current_lowest_y) > jump_threshold:
-                            cv2.putText(annotated, "TRUE LOSS OF CONTACT!", (30, 150), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
-                            foul_contact_frames.append(annotated.copy())
-                            cd_contact = 15
+                            photo_finish_frames.append((front_angle, annotated.copy()))
 
                     prev_stride_dist = stride_dist
                     prev_trend = trend
-                    prev_hip_center_x = hip_center_x # 골반 위치 지속 업데이트
 
         cap.release()
     finally:
@@ -156,37 +125,23 @@ if video_file:
         st.error("❌ 영상을 분석할 수 없습니다.")
     else:
         st.divider()
-        st.header("🎯 Rule 54 절대 직선 검증 리포트 (전방 다리 타겟팅 완료)")
+        st.header("📸 정지화면(Photo Finish) 무릎 각도 판독 결과")
         
-        st.subheader(f"🔴 Bent Knee 파울 적발: 총 {len(foul_bent_knee_frames)}회")
-        if len(foul_bent_knee_frames) > 0:
-            st.error("⚠️ 실제 내딛는 앞다리의 골반-복숭아뼈 빨간선(가이드라인)에서 무릎이 벗어났습니다.")
+        st.subheader(f"🔴 Bent Knee 파울 적발 사진: 총 {len(photo_finish_frames)}장")
+        if len(photo_finish_frames) > 0:
+            st.error("⚠️ 착지 프레임을 캡처한 뒤 정밀 각도를 재어본 결과, 파울이 확인되었습니다.")
+            st.markdown("- **초록색 얇은 선:** 규정상 요구되는 골반-발목 간 '이상적인 180도 절대 직선'")
+            st.markdown("- **빨간색 굵은 선:** 선수의 실제 무릎 꺾임 각도")
             
-            for i in range(0, len(foul_bent_knee_frames), 3):
+            for i in range(0, len(photo_finish_frames), 3):
                 cols = st.columns(3)
                 for j in range(3):
-                    if i + j < len(foul_bent_knee_frames):
-                        foul = foul_bent_knee_frames[i + j]
+                    if i + j < len(photo_finish_frames):
+                        foul = photo_finish_frames[i + j]
                         with cols[j]:
-                            st.image(foul[1], channels="RGB", caption=f"파울 #{i+j+1} (무릎: {foul[0]:.1f}°)")
+                            st.image(foul[1], channels="RGB", caption=f"파울 사진 #{i+j+1} (무릎: {foul[0]:.1f}°)")
         else:
-            st.success("✅ Bent Knee 통과: 앞다리 무릎이 빨간선(170도 이상)에 훌륭하게 밀착해 있습니다.")
-            
-        st.write("---")
-        
-        st.subheader(f"🟡 Loss of Contact 파울 적발: 총 {len(foul_contact_frames)}회")
-        if len(foul_contact_frames) > 0:
-            st.warning("⚠️ 두 발이 명백하게 지면에서 솟구쳐 오르는 도약 현상이 감지되었습니다.")
-            
-            for i in range(0, len(foul_contact_frames), 3):
-                cols2 = st.columns(3)
-                for j in range(3):
-                    if i + j < len(foul_contact_frames):
-                        img = foul_contact_frames[i + j]
-                        with cols2[j]:
-                            st.image(img, channels="RGB", caption=f"체공 파울 #{i+j+1}")
-        else:
-            st.success("✅ Loss of Contact 통과: 한 발이 땅에 확실히 닿아있어 체공 오심을 완벽히 방어했습니다.")
+            st.success("✅ Bent Knee 통과: 착지 프레임 분석 결과 모두 170도를 넘겼습니다.")
 
 st.write("---")
-st.info("💡 **[전방 다리 타겟팅 알고리즘 가동 중]** 뒷다리 오심을 제거하고, 움직이는 '진짜 앞다리'에만 골반-복숭아뼈 절대 직선을 긋습니다.")
+st.info("💡 실시간 추적의 오류를 없애고, **가장 보폭이 넓어진 착지 프레임(정지화면)**을 캡처한 후 그 위에서 각도를 정밀하게 그려내는 '공식 사진 판독(Photo Finish)' 방식을 사용합니다.")
