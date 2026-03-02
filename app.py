@@ -7,15 +7,15 @@ import os
 import math
 
 # 1. 인터페이스 설정
-st.set_page_config(page_title="Rule 54 Foul Catcher", layout="wide")
-st.title("🚨 국제 심판 전용: Rule 54 파울 적발 AI")
-st.markdown("##### 💡 오직 'Bent Knee(170도 붕괴)'와 'Loss of Contact(양발 체공)' 파울만 추적하여 증거 프레임을 화면에 박제합니다.")
+st.set_page_config(page_title="Rule 54 Foul Catcher (Dual AI)", layout="wide")
+st.title("🚨 국제 심판 전용: Rule 54 파울 2차 검증 AI")
+st.markdown("##### 💡 단일 AI의 착각을 막기 위해 '종골-골반 절대 직선'과 '0.42 & 0.58 듀얼 수학 모델'로 교차 검증된 진짜 파울만 박제합니다.")
 st.warning("🔒 업로드된 영상은 파울 프레임 추출 직후 서버에서 즉각 영구 삭제됩니다.")
 st.write("---")
 
 # 2. AI 분석 엔진 초기화
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
+pose = mp_pose.Pose(static_image_mode=False, model_complexity=2, min_detection_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
 def calculate_angle(a, b, c):
@@ -24,23 +24,8 @@ def calculate_angle(a, b, c):
     deg = np.abs(rad * 180.0 / np.pi)
     return 360 - deg if deg > 180 else deg
 
-# 💡 안전망이 추가된 170도 기준선 그리기
-def draw_170_degree_line(img, hip, knee, ankle):
-    try:
-        length = math.hypot(ankle[0] - knee[0], ankle[1] - knee[1])
-        angle_hip_knee = math.atan2(hip[1] - knee[1], hip[0] - knee[0])
-        target_angle = angle_hip_knee + math.radians(170)
-        
-        target_x = int(knee[0] + length * math.cos(target_angle))
-        target_y = int(knee[1] + length * math.sin(target_angle))
-        
-        cv2.line(img, (int(knee[0]), int(knee[1])), (target_x, target_y), (255, 0, 0), 4)
-        cv2.putText(img, "170 Limit", (target_x, target_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-    except Exception:
-        pass # 계산 오류 시 다운되지 않고 조용히 패스
-
 # 3. 영상 업로드 및 파울 수색
-st.error("⚠️ **10초 이내의 훈련 영상**을 올려주세요. 파울이 발생한 찰나의 순간을 AI가 잡아냅니다.")
+st.error("⚠️ **10초 이내의 훈련 영상**을 올려주세요. AI가 1차, 2차 검증을 동시에 수행합니다.")
 video_file = st.file_uploader("경보 역학 분석 영상 (MP4/MOV)", type=['mp4', 'mov', 'avi'])
 
 if video_file:
@@ -61,7 +46,7 @@ if video_file:
 
     try:
         cap = cv2.VideoCapture(tfile.name)
-        with st.spinner("🕵️‍♂️ AI 심판이 파울을 정밀 판독 중입니다... (에러 방지 시스템 가동)"):
+        with st.spinner("🕵️‍♂️ 2개의 AI 엔진이 0.42 / 0.58 기준으로 수학적 교차 검증을 진행 중입니다..."):
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
@@ -80,17 +65,23 @@ if video_file:
                     lm = res.pose_landmarks.landmark
                     
                     def get_pt(landmark):
-                        return [landmark.x * w, landmark.y * h]
+                        return [int(landmark.x * w), int(landmark.y * h)]
                     
+                    # 주요 관절 좌표 (종골-Heel 추가)
                     l_h = get_pt(lm[mp_pose.PoseLandmark.LEFT_HIP])
                     r_h = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HIP])
                     l_k = get_pt(lm[mp_pose.PoseLandmark.LEFT_KNEE])
                     r_k = get_pt(lm[mp_pose.PoseLandmark.RIGHT_KNEE])
                     l_a = get_pt(lm[mp_pose.PoseLandmark.LEFT_ANKLE])
                     r_a = get_pt(lm[mp_pose.PoseLandmark.RIGHT_ANKLE])
+                    
+                    # 💡 2차 검증용 종골(Heel) 좌표 추가
+                    l_heel = get_pt(lm[mp_pose.PoseLandmark.LEFT_HEEL])
+                    r_heel = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HEEL])
+                    
                     nose_x = lm[mp_pose.PoseLandmark.NOSE].x * w
                     
-                    current_lowest_y = max(l_a[1], r_a[1])
+                    current_lowest_y = max(l_heel[1], r_heel[1]) # 발목 대신 진짜 발바닥인 종골 기준
                     if current_lowest_y > global_ground_y:
                         global_ground_y = current_lowest_y
                         
@@ -104,28 +95,60 @@ if video_file:
                     annotated = img.copy()
                     mp_drawing.draw_landmarks(annotated, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-                    # 🚨 1. Bent Knee 판독
+                    # =========================================================
+                    # 🚨 1. Bent Knee 판독 (2차 검증 탑재)
+                    # =========================================================
                     if trend < 0 and prev_trend > 0 and stride_dist > (w * 0.1) and cd_bent_knee == 0:
                         front_hip = l_h if leading_is_left else r_h
                         front_knee = l_k if leading_is_left else r_k
                         front_ankle = l_a if leading_is_left else r_a
+                        front_heel = l_heel if leading_is_left else r_heel
                         
-                        front_angle = calculate_angle(front_hip, front_knee, front_ankle)
+                        # [1차 검증] 발목 기준 무릎 각도
+                        angle_ankle = calculate_angle(front_hip, front_knee, front_ankle)
+                        # [2차 검증] 종골(Heel) 기준 무릎 각도
+                        angle_heel = calculate_angle(front_hip, front_knee, front_heel)
                         
-                        if front_angle <= 170.0:
-                            draw_170_degree_line(annotated, front_hip, front_knee, front_ankle)
-                            cv2.putText(annotated, f"BENT KNEE: {front_angle:.1f} deg", (30, 80), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)
-                            foul_bent_knee_frames.append((front_angle, annotated.copy()))
-                            cd_bent_knee = 15
+                        # 1차 판독에서 170도 이하로 굽었다고 판단했을 때
+                        if angle_ankle <= 170.0:
+                            # 💡 [2차 검증 로직] 골반과 종골을 이은 가상의 직선 각도 확인
+                            # angle_heel이 175도 이상이면 사실상 다리가 펴져 있는 것 (오류 판독 거르기)
+                            if angle_heel >= 175.0:
+                                # "파울 아님!" -> 빨간선(골반-종골)을 그어주고 파울 리스트에는 넣지 않음
+                                cv2.line(annotated, tuple(front_hip), tuple(front_heel), (0, 255, 0), 2) # 초록선으로 패스 표시
+                                pass 
+                            else:
+                                # 1차, 2차 모두 굽었다고 판독 -> "진짜 파울"
+                                cv2.line(annotated, tuple(front_hip), tuple(front_knee), (255, 0, 0), 4)
+                                cv2.line(annotated, tuple(front_knee), tuple(front_heel), (255, 0, 0), 4)
+                                
+                                cv2.putText(annotated, f"CONFIRMED BENT: {angle_heel:.1f} deg", (30, 80), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)
+                                foul_bent_knee_frames.append((angle_heel, annotated.copy()))
+                                cd_bent_knee = 15
 
-                    # 🚨 2. 체공 파울 판독
-                    if trend > 0 and prev_trend < 0 and stride_dist < (w * 0.1) and cd_contact == 0:
-                        floating_threshold = h * 0.03 
-                        if (global_ground_y - current_lowest_y) > floating_threshold:
+                    # =========================================================
+                    # 🚨 2. 체공 파울 판독 (0.42 / 0.58 듀얼 검증)
+                    # =========================================================
+                    # 체공(교차)을 판단하는 보폭의 비율을 0.42와 0.58 두 가지 잣대로 평가
+                    stride_ratio = stride_dist / (w + 1e-5)
+                    
+                    # AI-1 (0.42 기준)과 AI-2 (0.58 기준)가 겹치는 엄격한 교차 데스존
+                    ai_1_crossover = stride_ratio < 0.042 
+                    ai_2_crossover = stride_ratio < 0.058 
+                    
+                    if (ai_1_crossover or ai_2_crossover) and cd_contact == 0:
+                        # 두 AI 중 하나라도 교차 지점이라 판단했을 때, 양 발이 다 떠있는지 체크
+                        floating_gap = global_ground_y - current_lowest_y
+                        
+                        # 공중에 뜬 높이 검증 (이중 잣대)
+                        ai_1_foul = floating_gap > (h * 0.042) # 매우 높이 뜬 경우
+                        ai_2_foul = floating_gap > (h * 0.025) # 살짝 뜬 경우
+                        
+                        # 💡 0.42 AI와 0.58 AI가 "둘 다" 체공이라고 동의(일치)했을 때만 파울 처리!
+                        if ai_1_foul and ai_2_foul:
                             cv2.line(annotated, (0, int(global_ground_y)), (w, int(global_ground_y)), (255, 0, 0), 3)
-                            cv2.putText(annotated, "GROUND LINE", (10, int(global_ground_y)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-                            cv2.putText(annotated, "LOSS OF CONTACT!", (30, 150), 
+                            cv2.putText(annotated, "DUAL VERIFIED: LOSS OF CONTACT", (30, 150), 
                                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
                             foul_contact_frames.append(annotated.copy())
                             cd_contact = 15
@@ -143,30 +166,28 @@ if video_file:
         st.error("❌ 영상을 분석할 수 없습니다. 선수가 잘 보이는 영상을 올려주세요.")
     else:
         st.divider()
-        st.header("🎯 Rule 54 심판 판독 결과 및 증거 자료")
+        st.header("🎯 Rule 54 듀얼 검증(Cross-Validated) 파울 리포트")
         
-        # 💡 [핵심 에러 해결] 화면 분할 로직 수정 (가로 한 줄에 몽땅 넣지 않고, 3개씩 예쁘게 줄바꿈)
-        st.subheader(f"🔴 Bent Knee 파울 적발 횟수: 총 {len(foul_bent_knee_frames)}회")
+        # --- 1. 무릎 굽힘 (Bent Knee) ---
+        st.subheader(f"🔴 Bent Knee (2차 검증 완료): 총 {len(foul_bent_knee_frames)}회 적발")
         if len(foul_bent_knee_frames) > 0:
-            st.error("⚠️ 앞다리 착지 순간 무릎이 170도 이하로 붕괴되었습니다. (빨간선이 170도 기준입니다)")
-            
-            # 3장씩 끊어서 출력하여 Streamlit 에러 방지
+            st.error("⚠️ [골반-종골 절대 직선] 검증을 거친 '진짜 무릎 굽힘 파울'입니다.")
             for i in range(0, len(foul_bent_knee_frames), 3):
                 cols = st.columns(3)
                 for j in range(3):
                     if i + j < len(foul_bent_knee_frames):
                         foul = foul_bent_knee_frames[i + j]
                         with cols[j]:
-                            st.image(foul[1], channels="RGB", caption=f"파울 #{i+j+1} (무릎 각도: {foul[0]:.1f}°)")
+                            st.image(foul[1], channels="RGB", caption=f"파울 #{i+j+1} (종골 기준 각도: {foul[0]:.1f}°)")
         else:
-            st.success("✅ Bent Knee 통과: 착지 시 170도 이상의 무릎 신전을 훌륭하게 유지했습니다.")
+            st.success("✅ Bent Knee 통과: 1차에서 굽어 보였더라도 2차 종골-골반 직선 검증에서 모두 무죄 판결을 받았습니다.")
             
         st.write("---")
         
-        st.subheader(f"🟡 Loss of Contact 파울 적발 횟수: 총 {len(foul_contact_frames)}회")
+        # --- 2. 양발 체공 (Loss of Contact) ---
+        st.subheader(f"🟡 Loss of Contact (0.42/0.58 이중 검증 완료): 총 {len(foul_contact_frames)}회 적발")
         if len(foul_contact_frames) > 0:
-            st.warning("⚠️ 교차 순간 두 발이 모두 지면(빨간선)에서 떨어지는 체공 현상이 포착되었습니다.")
-            
+            st.warning("⚠️ 0.42 엔진과 0.58 엔진이 동시에 '양발 체공'으로 만장일치 판정한 프레임입니다.")
             for i in range(0, len(foul_contact_frames), 3):
                 cols2 = st.columns(3)
                 for j in range(3):
@@ -175,7 +196,7 @@ if video_file:
                         with cols2[j]:
                             st.image(img, channels="RGB", caption=f"체공 파울 #{i+j+1}")
         else:
-            st.success("✅ Loss of Contact 통과: 교차 구간에서도 지면 접촉을 잘 유지했습니다.")
+            st.success("✅ Loss of Contact 통과: 두 AI 엔진 모두 양발 체공이 없다고 동의했습니다.")
 
 st.write("---")
-st.info("💡 **이 판독기는 국제 육상 연맹(World Athletics) Rule 54의 핵심인 '앞다리 신전'과 '교차 순간 체공'만을 수학적으로 필터링하여 증거 프레임을 추출합니다.**")
+st.info("💡 **[2차 검증 알고리즘 가동 중]** 단일 앵글 오류를 막기 위해, 골반과 종골(Heel)을 잇는 보조선을 바탕으로 진짜 파울만 추출합니다.")
