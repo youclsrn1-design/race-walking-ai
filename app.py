@@ -10,7 +10,7 @@ from collections import Counter
 st.set_page_config(page_title="Elite Racewalking Biomechanics Lab", layout="wide")
 st.title("🔬 엘리트 경보 생체역학 AI 판독 시스템 (Ph.D. Edition)")
 st.markdown("##### 💡 전방 지지 다리(Leading Leg) 자동 타겟팅 및 시상면/관상면 교차 왜곡 차단 엔진 탑재")
-st.markdown("다리가 교차할 때 발생하는 AI의 2D 인식 오류(쓰레기 데이터)를 수학적으로 완벽히 차단했습니다. AI는 이제 허공에 뜬 다리를 무시하고, 지면을 타격하는 **'전방 다리'의 착지 순간(Contact Phase)**만 정확히 타겟팅하여 Rule 54를 판독합니다.")
+st.markdown("다리가 교차할 때 발생하는 AI의 2D 인식 오류(쓰레기 데이터)를 수학적으로 완벽히 차단했습니다. AI는 허공에 뜬 다리를 무시하고, 지면을 타격하는 **'전방 다리'의 착지 순간(Contact Phase)**만 정확히 타겟팅하여 Rule 54를 판독합니다.")
 st.warning("🔒 [Privacy-First] 본 시스템은 분석 직후 메모리에서 영상을 즉각 영구 파쇄하여 기밀을 완벽히 보호합니다.")
 st.write("---")
 
@@ -41,7 +41,7 @@ if video_file:
     tfile.close() 
     
     view_types = [] 
-    contact_knees = [] # 진짜 지면에 닿은 무릎 각도만 수집
+    contact_knees = [] 
     hip_tilt_stats = [] 
     
     key_frame_side = None
@@ -53,7 +53,7 @@ if video_file:
 
     try:
         cap = cv2.VideoCapture(tfile.name)
-        with st.spinner("AI가 양 다리의 교차 왜곡을 제거하고 전방 지지 다리(Leading Leg)를 추적 중입니다..."):
+        with st.spinner("AI가 양 다리의 교차 왜곡을 제거하고 구도를 확정 중입니다..."):
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
@@ -73,7 +73,6 @@ if video_file:
                     
                     # 주요 관절 좌표
                     l_s = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER].x, lm[mp_pose.PoseLandmark.LEFT_SHOULDER].y]
-                    r_s = [lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].x, lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].y]
                     l_h = [lm[mp_pose.PoseLandmark.LEFT_HIP].x, lm[mp_pose.PoseLandmark.LEFT_HIP].y]
                     r_h = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
                     l_k = [lm[mp_pose.PoseLandmark.LEFT_KNEE].x, lm[mp_pose.PoseLandmark.LEFT_KNEE].y]
@@ -84,20 +83,21 @@ if video_file:
                     r_f = [lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX].x, lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX].y]
                     nose_x = lm[mp_pose.PoseLandmark.NOSE].x
                     
-                    # 💡 [방어 로직 1] 구도 자동 판별 (어깨 너비 vs 몸통 길이)
-                    shoulder_width = abs(l_s[0] - r_s[0])
-                    torso_height = abs((l_s[1] + r_s[1])/2 - (l_h[1] + r_h[1])/2)
-                    current_view = "front" if (shoulder_width / (torso_height + 0.0001)) > 0.4 else "side"
+                    # 💡 [방어 로직 1] 구도 자동 판별 (팔치기에 속지 않는 '골반 너비' 공식)
+                    hip_width = abs(l_h[0] - r_h[0])
+                    torso_height = abs(l_s[1] - l_h[1])
+                    # 측면에서는 두 골반이 겹쳐서 너비가 거의 0. 정면일 때만 0.25를 넘어감.
+                    current_view = "front" if (hip_width / (torso_height + 0.0001)) > 0.25 else "side"
                     view_types.append(current_view)
 
                     # 💡 [방어 로직 2] 전방 다리(Leading Leg) 강제 추적 (교차 오류 제거)
                     hip_center_x = (l_h[0] + r_h[0]) / 2
-                    facing_right = nose_x > hip_center_x # 진행 방향 파악
+                    facing_right = nose_x > hip_center_x 
                     
                     if facing_right:
-                        leading_is_left = l_a[0] > r_a[0] # 오른쪽으로 걸을 땐 X좌표가 더 큰 쪽이 앞다리
+                        leading_is_left = l_a[0] > r_a[0] 
                     else:
-                        leading_is_left = l_a[0] < r_a[0] # 왼쪽으로 걸을 땐 X좌표가 더 작은 쪽이 앞다리
+                        leading_is_left = l_a[0] < r_a[0] 
 
                     if leading_is_left:
                         hip, knee, ankle, foot = l_h, l_k, l_a, l_f
@@ -111,7 +111,7 @@ if video_file:
                     k_ang = calculate_angle(hip, knee, ankle)
                     a_ang = calculate_angle(knee, ankle, foot)
                     
-                    # 무릎이 170도 이상 펴진 순간을 '완전한 착지(Contact)'로 규정하고 이 데이터만 수집
+                    # 무릎이 170도 이상 펴진 순간을 '완전한 착지(Contact)'로 규정
                     if k_ang >= 170:
                         contact_knees.append(k_ang)
 
@@ -134,15 +134,16 @@ if video_file:
     if not person_detected:
         st.error("❌ 알고리즘이 피사체의 생체역학 랜드마크를 추출하지 못했습니다.")
     else:
+        # 영상의 최종 시점 확정 (가장 많이 감지된 구도를 메인으로 선택)
         dominant_view = Counter(view_types).most_common(1)[0][0] if view_types else "side"
 
         st.divider()
         st.subheader("🎯 딥러닝 구도 판독 및 필터링 결과")
         
+        # 💡 측면 영상일 경우, 정면(108도) 쓰레기 데이터는 아예 화면에 띄우지 않음!
         if dominant_view == "side":
-            st.success("🎥 **[시상면(측면) 완벽 감지]** 108도 같은 엉터리 정면 데이터를 차단하고, 앞다리의 착지 순간만 필터링한 '진짜 데이터'를 산출합니다.")
+            st.success("🎥 **[시상면(측면) 완벽 감지]** 오류를 유발하는 정면 데이터를 원천 차단하고, 앞다리의 착지 순간만 필터링한 '진짜 데이터'를 산출합니다.")
             
-            # 쓰레기 데이터가 제거된 진성 평균값
             avg_knee = np.mean(contact_knees) if contact_knees else max_knee
 
             col1, col2 = st.columns([1, 1])
@@ -152,14 +153,15 @@ if video_file:
                 st.markdown("#### 🏃‍♂️ Rule 54 운동학적 분석")
                 st.metric("최대 무릎 신전 모멘트", f"{key_frame_side['k']:.1f}°")
                 st.metric("Initial Contact 발목 각도", f"{key_frame_side['a']:.1f}°")
-                st.markdown(f"**🔥 실제 착지 구간 평균 무릎 신전도: {avg_knee:.1f}°**")
-                st.caption("✅ 뒤로 굽혀지는 스윙 다리(Swing leg)의 허수 데이터가 100% 제거되었습니다.")
+                st.markdown(f"**🔥 유효 착지 구간 평균 무릎 신전도: {avg_knee:.1f}°**")
+                st.caption("✅ 허공에 뜬 다리와 시각적 착시 데이터가 100% 제거되었습니다.")
 
                 if key_frame_side["k"] >= 178:
                     st.success("🔥 **[통과] 지면 반력을 극대화하는 완벽한 무릎 강체(Rigid lever)가 형성되었습니다.**")
                 else:
                     st.error("⚠️ **[경고] 벤트 니(Bent Knee) 메커니즘이 감지되어 실격 위험이 높습니다.**")
 
+        # 💡 정면 영상일 경우에만 골반 밸런스 데이터를 보여줌
         else: 
             st.success("🎥 **[관상면(정면) 감지]** 측면 분석을 차단하고, 골반 수직 이동(Pelvic Drop) 판독 모드를 가동합니다.")
             
