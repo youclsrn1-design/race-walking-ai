@@ -1,17 +1,27 @@
 import streamlit as st
-import mediapipe as mp
 import cv2
 import numpy as np
 import tempfile
 import os
 
+# 💡 [안전장치] MediaPipe 로드 중 에러 발생 시 앱이 죽지 않고 화면에 표시
+try:
+    import mediapipe as mp
+except ImportError:
+    st.error("🚨 치명적 에러: MediaPipe 패키지가 설치되지 않았거나 손상되었습니다. 터미널에서 'pip install mediapipe'를 실행해주세요.")
+    st.stop()
+except Exception as e:
+    st.error(f"🚨 MediaPipe 로드 중 알 수 없는 에러가 발생했습니다: {str(e)}")
+    st.stop()
+
 st.set_page_config(page_title="Rule 54 Final VAR", layout="wide")
-st.title("🎬 Rule 54 공식 VAR (발가락 센서 탑재 완결판)")
+st.title("🎬 Rule 54 공식 VAR (안전성 강화 완결판)")
 st.markdown("##### 💡 1. 무릎 굽힘: 종골 착지점부터 수직 구간까지 4배속 슬로우 모션으로 정밀 판독합니다.")
-st.markdown("##### 💡 2. 플라잉 억제: 뒤꿈치뿐만 아니라 '발가락'까지 감지하여 억울한 오심을 100% 차단합니다.")
+st.markdown("##### 💡 2. 플라잉 억제: 발가락 센서를 가동하여 억울한 체공 판독을 100% 차단합니다.")
 st.write("---")
 
 mp_pose = mp.solutions.pose
+# 에러 방지를 위해 static_image_mode를 False로 유지
 pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
 
 def calculate_angle(a, b, c):
@@ -32,7 +42,6 @@ if video_file:
     
     flight_foul_frames = [] 
     
-    # 💡 [핵심] 지면을 추적하는 변수
     global_ground_y = 0.0
     flight_frames_count = 0 
     
@@ -48,6 +57,11 @@ if video_file:
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
+        # 💡 [안전장치] 영상 해상도가 0일 경우(읽기 실패) 앱 튕김 방지
+        if orig_w == 0 or orig_h == 0:
+            st.error("🚨 비디오 파일을 읽을 수 없습니다. 파일이 손상되었거나 코덱이 지원되지 않습니다.")
+            st.stop()
+            
         scale_ratio = 800 / orig_w if orig_w > 800 else 1.0
         out_w = int(orig_w * scale_ratio)
         out_h = int(orig_h * scale_ratio)
@@ -67,7 +81,13 @@ if video_file:
                     frame = cv2.resize(frame, (out_w, out_h))
                 
                 img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                res = pose.process(img)
+                
+                # 💡 [안전장치] process() 중 에러 발생 시 처리
+                try:
+                    res = pose.process(img)
+                except Exception as e:
+                    st.warning(f"⚠️ 일부 프레임 분석 중 에러 무시됨: {str(e)}")
+                    continue
                 
                 clean_frame = img.copy() 
                 annotated = img.copy()   
@@ -80,22 +100,24 @@ if video_file:
                     def get_pt(landmark):
                         return [int(landmark.x * out_w), int(landmark.y * out_h)]
                     
-                    # 💡 [에러 해결] 에러가 났던 원인인 발가락 좌표를 공식 명칭으로 정확히 가져옵니다.
-                    l_h = get_pt(lm[mp_pose.PoseLandmark.LEFT_HIP])
-                    r_h = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HIP])
-                    l_k = get_pt(lm[mp_pose.PoseLandmark.LEFT_KNEE])
-                    r_k = get_pt(lm[mp_pose.PoseLandmark.RIGHT_KNEE])
-                    l_heel = get_pt(lm[mp_pose.PoseLandmark.LEFT_HEEL])
-                    r_heel = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HEEL])
-                    l_toe = get_pt(lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX])   # 왼발가락
-                    r_toe = get_pt(lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX])  # 오른발가락
-                    nose_x = lm[mp_pose.PoseLandmark.NOSE].x * out_w
+                    try:
+                        l_h = get_pt(lm[mp_pose.PoseLandmark.LEFT_HIP])
+                        r_h = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HIP])
+                        l_k = get_pt(lm[mp_pose.PoseLandmark.LEFT_KNEE])
+                        r_k = get_pt(lm[mp_pose.PoseLandmark.RIGHT_KNEE])
+                        l_heel = get_pt(lm[mp_pose.PoseLandmark.LEFT_HEEL])
+                        r_heel = get_pt(lm[mp_pose.PoseLandmark.RIGHT_HEEL])
+                        l_toe = get_pt(lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX])   
+                        r_toe = get_pt(lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX])  
+                        nose_x = lm[mp_pose.PoseLandmark.NOSE].x * out_w
+                    except IndexError:
+                        # 신체의 일부가 화면 밖으로 나가서 인식이 안 될 경우 튕김 방지
+                        continue
                     
                     waist_center = [int((l_h[0] + r_h[0]) / 2), int((l_h[1] + r_h[1]) / 2)]
                     moving_right = nose_x > waist_center[0]
                     front_is_left = (l_heel[0] > r_heel[0]) if moving_right else (l_heel[0] < r_heel[0])
                     
-                    # 💡 가장 낮은 지면(Ground) 계산 시 뒤꿈치뿐만 아니라 '발가락(Toe)'까지 포함!
                     current_lowest_y = max(l_heel[1], r_heel[1], l_toe[1], r_toe[1])
                     if current_lowest_y > global_ground_y:
                         global_ground_y = current_lowest_y
@@ -107,7 +129,6 @@ if video_file:
                     f_knee = l_k if front_is_left else r_k
                     
                     is_in_front = (f_heel[0] > waist_center[0]) if moving_right else (f_heel[0] < waist_center[0])
-                    # 착지 판정은 종골(뒤꿈치)이 땅에 닿았을 때로 유지
                     is_grounded = abs(global_ground_y - f_heel[1]) < (out_h * 0.04)
 
                     if is_in_front and is_grounded:
@@ -158,16 +179,12 @@ if video_file:
                                         cv2.FONT_HERSHEY_SIMPLEX, max(0.8, out_w/900), line_color, 3)
 
                     # =========================================================
-                    # 🚨 [2단계] 플라잉 파울: 발가락 센서(Toe Sensor) 철통 방어
+                    # 🚨 [2단계] 플라잉 파울: 발가락 센서(Toe Sensor) 
                     # =========================================================
-                    # 💡 4개의 점(양발 뒤꿈치 + 양발 끝) 중 하나라도 지면에서 2% 이내로 붙어있으면 안전(Safe)!
                     points_y = [l_heel[1], r_heel[1], l_toe[1], r_toe[1]]
-                    
-                    # 현재 4개의 점 중 가장 땅에 가까운(낮은) 점의 위치
                     closest_to_ground_y = max(points_y)
                     flight_gap = global_ground_y - closest_to_ground_y
                     
-                    # 4개의 점이 모두 공중에 떠 있어야만 체공 프레임 카운트 증가
                     if flight_gap > (out_h * 0.02): 
                         flight_frames_count += 1
                     else:
@@ -192,7 +209,7 @@ if video_file:
 
     # 4. 최종 리포트 출력
     if not person_detected:
-        st.error("❌ 영상을 분석할 수 없습니다.")
+        st.error("❌ 영상을 분석할 수 없습니다. 사람이 없거나 프레임을 읽지 못했습니다.")
     else:
         st.divider()
         st.header("🎬 Rule 54 방송용 하이라이트 VAR 리포트")
@@ -220,7 +237,7 @@ if video_file:
             st.success("✅ 통과: '발가락 지지 구간'을 포함하여, 두 발이 0.08초 이상 완전히 떠 있는 파울은 감지되지 않았습니다. (오심 억제 완료)")
 
 st.write("---")
-st.info("💡 **발가락 센서 활성화:** 뒷발 뒤꿈치가 들리더라도 발끝이 땅을 밀어내고 있는 구간을 완벽히 계산하여, 억울한 플라잉 오심을 차단합니다.")
+st.info("💡 **안전성 패치:** 영상 분석 중 알 수 없는 에러로 앱이 튕기는 것을 막기 위해 다중 예외 처리(Try-Except) 가동 중입니다.")
 
 try:
     os.unlink(out_video_path)
